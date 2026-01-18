@@ -2,3 +2,106 @@
 /FIX_SUMMARY.md
 /Job Listing.html
 /Job Listing_files
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.sublime-project
+*.sublime-workspace
+
+# Testing
+.pytest_cache/
+.tox/
+.coverage
+htmlcov/
+
+# Playwright
+.playwright/
+browser_downloads/
+
+# Session and authentication
+linkedin_session.json
+session.json
+*.session
+
+# Logs
+*.log
+logs/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Temporary files
+*.tmp
+*.bak
+.temp/
+temp/
+
+# OS specific
+Thumbs.db
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Job listing HTML files (can be regenerated)
+Job Listing*
+*.html
+
+# Node modules
+node_modules/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Jupyter Notebook
+.ipynb_checkpoints
+.jupyter
+
+# Exported data
+export_*/
+*.xlsx
+*.csv
+
+# Downloaded images/assets
+assets/
+downloads/

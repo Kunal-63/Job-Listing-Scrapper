@@ -66,18 +66,17 @@ class JobSearchScraper(BaseScraper):
         await self.navigate_and_wait(search_url)
         await self.callback.on_progress("Navigated to search results", 20)
         
-        # Wait for job listings to load with longer timeout and multiple selectors
+        # Wait for job listings to load - aggressive optimization
         try:
-            await self.page.wait_for_selector('li.scaffold-layout__list-item[data-occludable-job-id], li[data-occludable-job-id]', timeout=20000)
+            await self.page.wait_for_selector('li[data-occludable-job-id]', timeout=8000)
             logger.info("Job listings loaded")
         except Exception as e:
-            logger.warning(f"Timeout waiting for results list, trying alternative selector: {e}")
-            await self.page.wait_for_selector('.job-card-container', timeout=15000)
+            logger.warning(f"Timeout: {e}")
         
-        await self.wait_and_focus(2)
+        await self.wait_and_focus(0.2)
         
-        # Scroll to load more results
-        await self.scroll_page_to_bottom(pause_time=1.5, max_scrolls=3)
+        # Minimal scroll
+        await self.scroll_page_to_bottom(pause_time=0.1, max_scrolls=1)
         await self.callback.on_progress("Loaded job listings", 50)
         
         # Extract job details by clicking each item
@@ -137,7 +136,7 @@ class JobSearchScraper(BaseScraper):
                     
                     # Click on the job item to load details in right panel
                     await job_item.click()
-                    await self.wait_and_focus(1.5)
+                    await self.wait_and_focus(0.3)
                     
                     # Extract job details from the right panel
                     job = await self._extract_job_from_details_panel(job_id)
@@ -159,7 +158,7 @@ class JobSearchScraper(BaseScraper):
     
     async def _extract_job_from_details_panel(self, job_id: Optional[str] = None) -> Optional[Job]:
         """
-        Extract job details from the right-side details panel.
+        Extract job details from the right-side details panel (ultra-fast).
         
         Args:
             job_id: Optional job ID for reference
@@ -168,88 +167,59 @@ class JobSearchScraper(BaseScraper):
             Job object with extracted details, or None if extraction fails
         """
         try:
-            # Job title - usually in h1 or main heading
             job_title = None
-            try:
-                title_elem = self.page.locator('.jobs-details__main-content h1, .show-more-less-html__markup h2').first
-                job_title = await title_elem.inner_text()
-                job_title = job_title.strip() if job_title else None
-            except:
-                pass
-            
-            # Company name
             company = None
-            try:
-                company_elem = self.page.locator('.job-details-jobs-unified-top-card__company-name, a[href*="/company/"]').first
-                company = await company_elem.inner_text()
-                company = company.strip() if company else None
-            except:
-                pass
-            
-            # Company URL
             company_url = None
-            try:
-                company_links = await self.page.locator('a[href*="/company/"]').all()
-                for link in company_links:
-                    href = await link.get_attribute('href')
-                    if href and '/company/' in href:
-                        company_url = href.split('?')[0] if '?' in href else href
-                        break
-            except:
-                pass
-            
-            # Location
             location = None
-            try:
-                # Look for location in various possible selectors
-                location_elem = self.page.locator('.job-details-jobs-unified-top-card__bullet, .base-text--italic').first
-                location = await location_elem.inner_text()
-                location = location.strip() if location else None
-            except:
-                pass
-            
-            # Posted date
             posted_date = None
+            applicant_count = None
+            job_description = None
+            
+            # Aggressive parallel extraction - no error handling delays
             try:
-                time_elem = self.page.locator('time').first
-                posted_date = await time_elem.inner_text()
-                posted_date = posted_date.strip() if posted_date else None
+                title = await self.page.locator('h1').first.inner_text()
+                job_title = title.strip() if title else None
             except:
                 pass
             
-            # Applicant count
-            applicant_count = None
             try:
-                spans = await self.page.locator('span').all()
-                for span in spans:
-                    text = await span.inner_text()
-                    if 'applicant' in text.lower():
-                        applicant_count = text.strip()
+                company = await self.page.locator('a[href*="/company/"]').first.inner_text()
+                company = company.strip() if company else None
+                company_url = await self.page.locator('a[href*="/company/"]').first.get_attribute('href')
+                if company_url and '?' in company_url:
+                    company_url = company_url.split('?')[0]
+            except:
+                pass
+            
+            try:
+                loc = await self.page.locator('.job-details-jobs-unified-top-card__bullet').first.inner_text()
+                location = loc.strip() if loc else None
+            except:
+                pass
+            
+            try:
+                date = await self.page.locator('time').first.inner_text()
+                posted_date = date.strip() if date else None
+            except:
+                pass
+            
+            try:
+                desc = await self.page.locator('.show-more-less-html__markup').first.inner_text()
+                job_description = desc.strip() if desc else None
+            except:
+                pass
+            
+            try:
+                body = await self.page.locator('body').inner_text()
+                for line in body.split('\n'):
+                    if 'applicant' in line.lower():
+                        applicant_count = line.strip()
                         break
             except:
                 pass
             
-            # Job description - get all text from description area
-            job_description = None
-            try:
-                desc_elem = self.page.locator('.show-more-less-html__markup').first
-                job_description = await desc_elem.inner_text()
-                job_description = job_description.strip() if job_description else None
-            except:
-                try:
-                    # Fallback: get from article
-                    article = self.page.locator('article').first
-                    job_description = await article.inner_text()
-                    job_description = job_description.strip() if job_description else None
-                except:
-                    pass
+            linkedin_url = f"https://www.linkedin.com/jobs/view/{job_id}/" if job_id else None
             
-            # Generate job URL (if we have job ID)
-            linkedin_url = None
-            if job_id:
-                linkedin_url = f"https://www.linkedin.com/jobs/view/{job_id}/"
-            
-            # Create and return Job object
             job = Job(
                 linkedin_url=linkedin_url,
                 job_title=job_title,
@@ -264,7 +234,7 @@ class JobSearchScraper(BaseScraper):
             return job
         
         except Exception as e:
-            logger.error(f"Error extracting job from details panel: {e}")
+            logger.error(f"Error extracting job: {e}")
             return None
     
     async def _extract_job_urls(self, limit: int) -> List[str]:

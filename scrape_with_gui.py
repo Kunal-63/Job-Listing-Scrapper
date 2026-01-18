@@ -282,8 +282,6 @@ The session will be saved to linkedin_session.json for future use.
         text_widget.insert(tk.END, log_message)
         text_widget.see(tk.END)
         text_widget.config(state=tk.DISABLED)
-        
-        self.root.update()
     
     def start_login(self):
         """Start login process in a separate thread"""
@@ -402,7 +400,9 @@ The session will be saved to linkedin_session.json for future use.
                     if not self.is_scraping:
                         self.log_progress("⏹ Scraping stopped by user", tab="scraper")
                         break
-                    self.log_progress(f"[{i}/{len(self.scraped_jobs)}] ✓ {job.job_title} at {job.company}", tab="scraper")
+                    # Only log every 2nd job to save time
+                    if i % 2 == 0 or i == 1:
+                        self.log_progress(f"[{i}/{len(self.scraped_jobs)}] ✓ {job.job_title[:40]}", tab="scraper")
                 
                 self.log_progress(f"\n✅ Scraping complete! Total jobs: {len(self.scraped_jobs)}", tab="scraper")
                 self._display_results()
