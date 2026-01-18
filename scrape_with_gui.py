@@ -174,7 +174,19 @@ The session will be saved to linkedin_session.json for future use.
             textvariable=self.max_jobs_var,
             width=10
         )
-        max_jobs_spin.pack(anchor=tk.W)
+        max_jobs_spin.pack(anchor=tk.W, pady=(0, 10))
+        
+        ttk.Label(options_frame, text="Concurrent tasks (higher = faster, but more resource intensive):").pack(anchor=tk.W, pady=(0, 5))
+        
+        self.concurrent_var = tk.StringVar(value="5")
+        concurrent_spin = ttk.Spinbox(
+            options_frame,
+            from_=1,
+            to=10,
+            textvariable=self.concurrent_var,
+            width=10
+        )
+        concurrent_spin.pack(anchor=tk.W)
         
         # Button frame
         button_frame = ttk.Frame(main_container)
@@ -380,19 +392,25 @@ The session will be saved to linkedin_session.json for future use.
         try:
             url = self.url_input.get().strip()
             max_jobs = int(self.max_jobs_var.get())
+            max_concurrent = int(self.concurrent_var.get())
             
             self.log_progress(f"📄 Loading job listing: {url}", tab="scraper")
+            self.log_progress(f"⚙️ Settings: Max jobs={max_jobs}, Concurrent tasks={max_concurrent}", tab="scraper")
             
-            async with BrowserManager(headless=True) as browser:
+            async with BrowserManager(headless=False) as browser:
                 await browser.load_session("linkedin_session.json")
                 self.log_progress("✓ Session loaded", tab="scraper")
                 
-                # Search for jobs and scrape details directly from list view
+                # Search for jobs with parallel processing
                 search_scraper = JobSearchScraper(browser.page)
                 self.log_progress(f"🔍 Searching for jobs (max: {max_jobs})...", tab="scraper")
                 
-                # This now returns Job objects directly instead of URLs
-                self.scraped_jobs = await search_scraper.search(limit=max_jobs)
+                # Pass the concurrent parameter to enable parallel processing
+                self.scraped_jobs = await search_scraper.search(
+                    search_url=url, 
+                    limit=max_jobs,
+                    max_concurrent=max_concurrent
+                )
                 
                 self.log_progress(f"✓ Scraped {len(self.scraped_jobs)} jobs successfully", tab="scraper")
                 
@@ -400,8 +418,8 @@ The session will be saved to linkedin_session.json for future use.
                     if not self.is_scraping:
                         self.log_progress("⏹ Scraping stopped by user", tab="scraper")
                         break
-                    # Only log every 2nd job to save time
-                    if i % 2 == 0 or i == 1:
+                    # Only log every 5th job to save time
+                    if i % 5 == 0 or i == 1 or i == len(self.scraped_jobs):
                         self.log_progress(f"[{i}/{len(self.scraped_jobs)}] ✓ {job.job_title[:40]}", tab="scraper")
                 
                 self.log_progress(f"\n✅ Scraping complete! Total jobs: {len(self.scraped_jobs)}", tab="scraper")
@@ -479,6 +497,12 @@ POSTED DATE: {job.posted_date}
 APPLICANT COUNT: {job.applicant_count}
 JOB URL: {job.linkedin_url}
 
+COMPANY INFORMATION:
+  Headquarters: {job.headquarters or 'N/A'}
+  Founded: {job.founded or 'N/A'}
+  Industry: {job.industry or 'N/A'}
+  Company Size: {job.company_size or 'N/A'}
+
 {'='*80}
 DESCRIPTION:
 {'='*80}
@@ -508,7 +532,13 @@ DESCRIPTION:
                     "posted_date": job.posted_date,
                     "applicant_count": job.applicant_count,
                     "job_url": job.linkedin_url,
-                    "description": job.job_description
+                    "description": job.job_description,
+                    "company_details": {
+                        "headquarters": job.headquarters,
+                        "founded": job.founded,
+                        "industry": job.industry,
+                        "company_size": job.company_size
+                    }
                 })
             
             with open(filename, 'w', encoding='utf-8') as f:

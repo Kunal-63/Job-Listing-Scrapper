@@ -19,6 +19,10 @@ class Job(BaseModel):
     applicant_count: Optional[str] = None
     job_description: Optional[str] = None
     benefits: Optional[str] = None
+    headquarters: Optional[str] = None
+    founded: Optional[str] = None
+    industry: Optional[str] = None
+    company_size: Optional[str] = None
     
     @field_validator('linkedin_url')
     @classmethod
