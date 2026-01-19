@@ -149,15 +149,20 @@ class JobScraper(BaseScraper):
             return None
     
     async def _get_company_url(self) -> Optional[str]:
-        """Extract company LinkedIn URL."""
+        """Extract company LinkedIn URL and clean it (remove /life suffix)."""
         try:
             links = await self.page.locator('a').all()
             for link in links:
                 href = await link.get_attribute('href')
                 if href and '/company/' in href and 'linkedin.com' in href:
-                    # Clean up URL (remove query params)
                     if '?' in href:
                         href = href.split('?')[0]
+                    
+                    href = href.rstrip('/')
+                    if href.endswith('/life'):
+                        href = href[:-5]  # Remove '/life'
+                    
+                    logger.debug(f"Cleaned company URL: {href}")
                     return href
         except:
             pass

@@ -5,6 +5,7 @@ Searches for jobs on LinkedIn and extracts job details from detail and company p
 """
 import asyncio
 import logging
+import re
 import sys
 from typing import Optional, List
 from urllib.parse import urlencode
@@ -405,8 +406,15 @@ class JobSearchScraper(BaseScraper):
             
             try:
                 company_url = await self.page.locator('a[href*="/company/"]').first.get_attribute('href')
-                if company_url and '?' in company_url:
-                    company_url = company_url.split('?')[0]
+
+                if company_url:
+                    company_url = company_url.split('?')[0].rstrip('/')
+                    
+                    # Remove /life suffix from company URLs
+                    if company_url.endswith('/life'):
+                        company_url = company_url[:-5]
+                    
+                    logger.debug(f"Cleaned company URL: {company_url}")
             except:
                 pass
             
@@ -472,12 +480,35 @@ class JobSearchScraper(BaseScraper):
         try:
             logger.info(f"Fast extraction: Getting {limit} job URLs...")
             
-            # Wait longer for initial content to fully render
+            # Wait extra long for initial content to fully render with links
             logger.info("Waiting for all visible job items to fully render with links...")
-            await asyncio.sleep(3.0)
+            await asyncio.sleep(5.0)
             
             job_items = await self.page.locator('li[data-occludable-job-id]').all()
             logger.info(f"Found {len(job_items)} jobs initially visible")
+            
+            # Trigger rendering by scrolling slightly within the container
+            try:
+                await self.page.evaluate('''() => {
+                    const jobItems = document.querySelectorAll('li[data-occludable-job-id]');
+                    if (jobItems.length > 0) {
+                        let container = jobItems[0].closest('ul');
+                        if (!container) {
+                            const selectors = ['div.jobs-search-results-list', 'div[class*="scaffold-layout__list"]'];
+                            for (const sel of selectors) {
+                                container = document.querySelector(sel);
+                                if (container) break;
+                            }
+                        }
+                        if (container && (container.scrollHeight > container.clientHeight)) {
+                            container.scrollBy({ top: 100, behavior: 'auto' });
+                            setTimeout(() => container.scrollBy({ top: -100, behavior: 'auto' }), 200);
+                        }
+                    }
+                }''')
+                await asyncio.sleep(1.5)
+            except:
+                pass
             
             try:
                 urls_js = await self.page.evaluate('''() => {
@@ -508,7 +539,7 @@ class JobSearchScraper(BaseScraper):
                 
                 await asyncio.sleep(2.0)
                 
-                max_scrolls = 30 
+                max_scrolls = 50 
                 no_new_urls_count = 0
                 previous_url_count = len(job_urls)
                 
@@ -564,8 +595,8 @@ class JobSearchScraper(BaseScraper):
                                 const currentScroll = container.scrollTop;
                                 const clientHeight = container.clientHeight;
                                 
-                                // Scroll by 2 viewports using auto behavior
-                                container.scrollBy({ top: clientHeight * 2, behavior: 'auto' });
+                                // Scroll by 1 viewport at a time for better loading
+                                container.scrollBy({ top: clientHeight, behavior: 'auto' });
                                 
                                 const newScroll = container.scrollTop;
                                 const scrolled = newScroll > currentScroll;
@@ -600,7 +631,7 @@ class JobSearchScraper(BaseScraper):
                             logger.warning(f"Could not find job list container: {scroll_result.get('error')}")
                         
                         logger.debug(f"Scroll {scroll_attempt + 1}: Waiting for page to load new content...")
-                        await asyncio.sleep(2.5)
+                        await asyncio.sleep(4.0)
                         
                     except Exception as e:
                         logger.debug(f"Scroll error: {e}")
@@ -627,7 +658,7 @@ class JobSearchScraper(BaseScraper):
                         if len(job_urls) == previous_url_count:
                             no_new_urls_count += 1
                             logger.debug(f"No new URLs (count: {no_new_urls_count}), current: {len(job_urls)}/{limit}")
-                            if no_new_urls_count >= 5:
+                            if no_new_urls_count >= max_scrolls:
                                 logger.info(f"No new URLs after {no_new_urls_count} consecutive scrolls, stopping")
                                 break
                         else:
