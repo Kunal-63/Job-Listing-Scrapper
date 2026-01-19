@@ -1,75 +1,352 @@
-#!/usr/bin/env python3
-"""
-Create LinkedIn Session File
-
-This script helps you create a linkedin_session.json file by logging in manually.
-The session file is needed to run integration tests and scraping examples.
-
-Usage:
-    python samples/create_session.py
-    
-The script will:
-1. Open a browser window with LinkedIn login page
-2. Wait for you to manually log in (up to 5 minutes)
-3. Automatically detect when login is complete
-4. Save your session to linkedin_session.json
-
-Note: The session file contains authentication cookies and should never be committed to git.
-"""
 import asyncio
-from linkedin_scraper import BrowserManager, wait_for_manual_login
+import logging
+import sys
+import tkinter as tk
+from tkinter import messagebox
+import threading
+import subprocess
+from pathlib import Path
+
+from mongo_client import get_db, get_client
+from linkedin_scraper import wait_for_manual_login
+from linkedin_scraper.core.browser import BrowserManager
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%H:%M:%S',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+
+logger = logging.getLogger(__name__)
 
 
-async def create_session():
-    """Create a LinkedIn session file through manual login."""
-    print("="*60)
-    print("LinkedIn Session Creator")
-    print("="*60)
-    print("\nThis script will help you create a session file for LinkedIn.")
-    print("\nSteps:")
-    print("1. A browser window will open")
-    print("2. Log in to LinkedIn manually")
-    print("3. The script will detect when you're logged in")
-    print("4. Your session will be saved to linkedin_session.json")
-    print("\n" + "="*60 + "\n")
+class LinkedInScraperApp:
+    """Main application with MongoDB integration and modern UI."""
     
-    async with BrowserManager(headless=False) as browser:
-        # Navigate to LinkedIn login page
-        print("Opening LinkedIn login page...")
-        await browser.page.goto("https://www.linkedin.com/login")
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Plugs - LinkedIn Job Scraper")
+        self.root.geometry("500x650")
+        self.root.config(bg="#f8f9fa")
         
-        print("\n🔐 Please log in to LinkedIn in the browser window...")
-        print("   (You have 5 minutes to complete the login)")
-        print("   - Enter your email and password")
-        print("   - Complete any 2FA or CAPTCHA challenges")
-        print("   - Wait for your feed to load")
-        print("\n⏳ Waiting for login completion...\n")
+        # State variables
+        self.is_logged_in = False
+        self.work_station_name = tk.StringVar()
+        self.terms_accepted = tk.BooleanVar(value=False)
         
-        # Wait for manual login (5 minutes timeout)
-        try:
-            await wait_for_manual_login(browser.page, timeout=300000)
-        except Exception as e:
-            print(f"\n❌ Login failed: {e}")
-            print("\nPlease try again and make sure you:")
-            print("  - Complete the login within 5 minutes")
-            print("  - Wait until your LinkedIn feed loads")
+        # Current screen
+        self.current_screen = None
+        
+        # Show login screen
+        self.show_login_screen()
+    
+    def clear_screen(self):
+        """Clear current screen."""
+        if self.current_screen:
+            self.current_screen.destroy()
+    
+    def show_login_screen(self):
+        """Show modern login screen."""
+        self.clear_screen()
+        
+        # Main container
+        self.current_screen = tk.Frame(self.root, bg="#f8f9fa")
+        self.current_screen.pack(fill=tk.BOTH, expand=True, padx=40, pady=40)
+        
+        # Header - "Plugs"
+        header = tk.Label(
+            self.current_screen,
+            text="Plugs",
+            font=("Arial", 48, "bold"),
+            bg="#f8f9fa",
+            fg="#000000"
+        )
+        header.pack(pady=(20, 10))
+        
+        # Subtitle
+        subtitle_text = "Setup your profile to see how we\nconnect you with high-intent buyers\nready to take action."
+        subtitle = tk.Label(
+            self.current_screen,
+            text=subtitle_text,
+            font=("Arial", 13),
+            bg="#f8f9fa",
+            fg="#4a5568",
+            justify=tk.CENTER
+        )
+        subtitle.pack(pady=(0, 30))
+        
+        # Work station name input
+        input_frame = tk.Frame(self.current_screen, bg="#f8f9fa")
+        input_frame.pack(fill=tk.X, pady=(0, 15))
+        
+        self.work_station_entry = tk.Entry(
+            input_frame,
+            textvariable=self.work_station_name,
+            font=("Arial", 12),
+            bg="#ffffff",
+            fg="#000000",
+            relief=tk.SOLID,
+            borderwidth=1,
+            highlightthickness=2,
+            highlightbackground="#e2e8f0",
+            highlightcolor="#0073b1"
+        )
+        self.work_station_entry.pack(fill=tk.X, ipady=10, ipadx=10)
+        self.work_station_entry.insert(0, "Choose your work station name")
+        self.work_station_entry.bind("<FocusIn>", self._on_entry_focus_in)
+        self.work_station_entry.bind("<FocusOut>", self._on_entry_focus_out)
+        self.work_station_entry.config(fg="#9ca3af")
+        
+        # Terms and conditions checkbox
+        terms_frame = tk.Frame(self.current_screen, bg="#f8f9fa")
+        terms_frame.pack(fill=tk.X, pady=(0, 20))
+        
+        terms_check = tk.Checkbutton(
+            terms_frame,
+            text="I agree with terms and conditions of use",
+            variable=self.terms_accepted,
+            font=("Arial", 10),
+            bg="#f8f9fa",
+            fg="#4a5568",
+            activebackground="#f8f9fa",
+            selectcolor="#ffffff",
+            relief=tk.FLAT
+        )
+        terms_check.pack(anchor=tk.W)
+        
+        # Connect LinkedIn button
+        self.connect_button = tk.Button(
+            self.current_screen,
+            text="🔗 Connect your LinkedIn",
+            font=("Arial", 13, "bold"),
+            bg="#000000",
+            fg="#ffffff",
+            activebackground="#1a1a1a",
+            activeforeground="#ffffff",
+            relief=tk.FLAT,
+            cursor="hand2",
+            command=self.start_linkedin_login,
+            padx=20,
+            pady=15
+        )
+        self.connect_button.pack(fill=tk.X, pady=(0, 15))
+        
+        # Footer text
+        footer_text = "We track recruitment for you on daily bases and our agent provide\nyour best fit Ideal profile linkedin contact"
+        footer = tk.Label(
+            self.current_screen,
+            text=footer_text,
+            font=("Arial", 9),
+            bg="#f8f9fa",
+            fg="#9ca3af",
+            justify=tk.CENTER
+        )
+        footer.pack(pady=(10, 0))
+    
+    def _on_entry_focus_in(self, event):
+        """Handle entry focus in."""
+        if self.work_station_entry.get() == "Choose your work station name":
+            self.work_station_entry.delete(0, tk.END)
+            self.work_station_entry.config(fg="#000000")
+    
+    def _on_entry_focus_out(self, event):
+        """Handle entry focus out."""
+        if not self.work_station_entry.get():
+            self.work_station_entry.insert(0, "Choose your work station name")
+            self.work_station_entry.config(fg="#9ca3af")
+    
+    def start_linkedin_login(self):
+        """Start LinkedIn login process."""
+        # Validate inputs
+        work_station = self.work_station_name.get()
+        if not work_station or work_station == "Choose your work station name":
+            messagebox.showerror("Error", "Please enter your work station name")
             return
         
-        # Save session to project root
-        session_path = "linkedin_session.json"
-        print(f"\n💾 Saving session to {session_path}...")
-        await browser.save_session(session_path)
+        if not self.terms_accepted.get():
+            messagebox.showerror("Error", "Please accept the terms and conditions")
+            return
         
-        print("\n" + "="*60)
-        print("✅ Success! Session file created.")
-        print("="*60)
-        print(f"\nSession saved to: {session_path}")
-        print("\nYou can now:")
-        print("  - Run integration tests: pytest")
-        print("  - Run example scripts: python samples/scrape_person.py")
-        print("\nNote: Keep this file secure and don't commit it to git.")
-        print("="*60 + "\n")
+        # Disable button
+        self.connect_button.config(state=tk.DISABLED, text="Connecting...")
+        
+        # Start login in background thread
+        threading.Thread(target=self._run_login, daemon=True).start()
+    
+    def _run_login(self):
+        """Run LinkedIn login process."""
+        try:
+            asyncio.run(self._login_async())
+        except Exception as e:
+            logger.error(f"Login failed: {e}")
+            messagebox.showerror("Login Error", f"Login failed: {str(e)}")
+            self.connect_button.config(state=tk.NORMAL, text="🔗 Connect your LinkedIn")
+    
+    async def _login_async(self):
+        """Async LinkedIn login process."""
+        try:
+            logger.info("Starting LinkedIn login...")
+            
+            async with BrowserManager(headless=False, disable_javascript=False) as browser:
+                logger.info("Navigating to LinkedIn login page...")
+                await browser.page.goto("https://www.linkedin.com/login")
+                
+                logger.info("Waiting for manual login (5 minutes timeout)...")
+                await wait_for_manual_login(browser.page, timeout=300000)
+                
+                # Save session
+                logger.info("Saving session...")
+                await browser.save_session("linkedin_session.json")
+                
+                self.is_logged_in = True
+                logger.info("Login successful!")
+                
+                # Switch to dashboard
+                self.root.after(0, self.show_dashboard)
+        
+        except Exception as e:
+            logger.error(f"Login error: {e}")
+            raise
+    
+    def show_dashboard(self):
+        """Show main dashboard after successful login with Start Scraping button."""
+        self.clear_screen()
+        
+        # Main container
+        self.current_screen = tk.Frame(self.root, bg="#f8f9fa")
+        self.current_screen.pack(fill=tk.BOTH, expand=True, padx=40, pady=40)
+        
+        # Keep window size
+        self.root.geometry("500x400")
+        
+        # Header
+        header = tk.Label(
+            self.current_screen,
+            text="LinkedIn Scraper",
+            font=("Arial", 32, "bold"),
+            bg="#f8f9fa",
+            fg="#000000"
+        )
+        header.pack(pady=(40, 20))
+        
+        # Status message
+        status = tk.Label(
+            self.current_screen,
+            text="✓ Successfully connected to LinkedIn",
+            font=("Arial", 12),
+            bg="#f8f9fa",
+            fg="#10b981"
+        )
+        status.pack(pady=(0, 40))
+        
+        # Start Scraping Button - Large and prominent
+        self.scrape_button = tk.Button(
+            self.current_screen,
+            text="🚀 Start Scraping",
+            font=("Arial", 16, "bold"),
+            bg="#0073b1",
+            fg="#ffffff",
+            activebackground="#005582",
+            activeforeground="#ffffff",
+            relief=tk.FLAT,
+            cursor="hand2",
+            command=self.start_background_scraping,
+            padx=40,
+            pady=20
+        )
+        self.scrape_button.pack(pady=20)
+        
+        # Info text
+        info_text = "Click to start scraping job links from MongoDB\nThe process will run in the background"
+        info = tk.Label(
+            self.current_screen,
+            text=info_text,
+            font=("Arial", 10),
+            bg="#f8f9fa",
+            fg="#6b7280",
+            justify=tk.CENTER
+        )
+        info.pack(pady=(10, 0))
+    
+    def start_background_scraping(self):
+        """Start scraping process in background."""
+        # Disable button
+        self.scrape_button.config(state=tk.DISABLED, text="⏳ Starting...")
+        
+        # Show confirmation
+        result = messagebox.showinfo(
+            "Scraping Started",
+            "The scraping process has been started in the background.\n\n"
+            "You can view the process in Task Manager.\n"
+            "Check 'scraper_background.log' for progress.\n\n"
+            "The application window will now close."
+        )
+        
+        # Start background process
+        threading.Thread(target=self._start_background_process, daemon=True).start()
+        
+        # Give it a moment to start, then close the window
+        self.root.after(2000, self._close_application)
+    
+    def _close_application(self):
+        """Close the application window."""
+        logger.info("Closing application window - background scraper is running")
+        self.root.quit()
+        self.root.destroy()
+    
+    def _start_background_process(self):
+        """Start the actual background scraping process."""
+        try:
+            # Run the background scraper script
+            script_path = Path(__file__).parent / "background_scraper.py"
+            
+            # Get pythonw.exe path (windowless Python interpreter)
+            python_exe = sys.executable
+            pythonw_exe = python_exe.replace("python.exe", "pythonw.exe")
+            
+            # If pythonw doesn't exist, fall back to using CREATE_NO_WINDOW flag
+            if not Path(pythonw_exe).exists():
+                pythonw_exe = python_exe
+            
+            # Start as a detached background process without console window
+            if sys.platform == "win32":
+                # Windows: Use pythonw or CREATE_NO_WINDOW flag
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = subprocess.SW_HIDE
+                
+                subprocess.Popen(
+                    [pythonw_exe, str(script_path)],
+                    creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS,
+                    startupinfo=startupinfo,
+                    close_fds=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+            else:
+                # Unix-like systems
+                subprocess.Popen(
+                    [pythonw_exe, str(script_path)],
+                    start_new_session=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+            
+            logger.info("Background scraper process started successfully")
+            
+        except Exception as e:
+            logger.error(f"Error starting background process: {e}")
+            messagebox.showerror("Error", f"Failed to start background process: {str(e)}")
+
+
+def main():
+    """Main entry point."""
+    root = tk.Tk()
+    app = LinkedInScraperApp(root)
+    root.mainloop()
 
 
 if __name__ == "__main__":
-    asyncio.run(create_session())
+    main()

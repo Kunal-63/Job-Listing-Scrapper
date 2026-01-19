@@ -178,27 +178,37 @@ class JobScraper(BaseScraper):
             return None
     
     async def _get_posted_date(self) -> Optional[str]:
-        """Extract posted date."""
+        """Extract posted date (relative time only)."""
+        import re
         try:
-            # Look for text containing "ago" or date info
             text_elements = await self.page.locator('span').all()
             for elem in text_elements:
                 text = await elem.inner_text()
-                if 'ago' in text.lower() or 'posted' in text.lower():
-                    return text.strip()
+                match = re.search(r'(\d+\s+(?:minute|hour|day|week|month|year)s?\s+ago)', text, re.IGNORECASE)
+                if match:
+                    return match.group(1).strip()
+                
+                if 'posted' in text.lower() and 'ago' in text.lower():
+                     match = re.search(r'posted\s+(.*?ago)', text, re.IGNORECASE)
+                     if match:
+                         return match.group(1).strip()
         except:
             pass
         return None
     
     async def _get_applicant_count(self) -> Optional[str]:
         """Extract applicant count."""
+        import re
         try:
             # Look for applicant count text
             text_elements = await self.page.locator('span').all()
             for elem in text_elements:
                 text = await elem.inner_text()
                 if 'applicant' in text.lower():
-                    return text.strip()
+                    # Extract just the count part (e.g., "34 applicants", "Over 100 applicants")
+                    match = re.search(r'((?:Over\s+)?(?:\d+,?)+\s+applicants?)', text, re.IGNORECASE)
+                    if match:
+                        return match.group(1).strip()
         except:
             pass
         return None

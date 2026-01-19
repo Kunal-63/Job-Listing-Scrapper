@@ -72,7 +72,6 @@ class CompanyScraper(BaseScraper):
         """
         logger.info(f"Starting company scraping: {linkedin_url}")
         
-        # Clean up URL - remove /life suffix if present
         linkedin_url = linkedin_url.rstrip('/')
         if linkedin_url.endswith('/life'):
             linkedin_url = linkedin_url[:-5]
@@ -80,7 +79,6 @@ class CompanyScraper(BaseScraper):
         
         await self.callback.on_start("company", linkedin_url)
         
-        # Navigate to company page with increased timeout to handle slow pages
         await self.navigate_and_wait(linkedin_url, wait_until='domcontentloaded', timeout=45000)
         await self.callback.on_progress("Navigated to company page", 10)
         
@@ -89,7 +87,6 @@ class CompanyScraper(BaseScraper):
         name = await self._get_name()
         await self.callback.on_progress(f"Got company name: {name}", 20)
         
-        # Navigate to About section to get detailed company information
         about_section_url = linkedin_url.rstrip('/') + '/about/'
         logger.info(f"Navigating to About section: {about_section_url}")
         await self.navigate_and_wait(about_section_url, wait_until='domcontentloaded', timeout=45000)

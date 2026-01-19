@@ -286,6 +286,8 @@ class JobSearchScraper(BaseScraper):
                                 job.founded = company.founded
                                 job.industry = company.industry
                                 job.company_size = company.company_size
+                                job.company_about = company.about_us
+                                job.company_website = company.website
                                 logger.info(f"[{index + 1}/{len(jobs)}] Company details added")
                                 return job  # Success, return enriched job
                             else:
@@ -440,8 +442,11 @@ class JobSearchScraper(BaseScraper):
                 body_text = await self.page.locator('body').inner_text()
                 for line in body_text.split('\n')[:100]:  # Only check first 100 lines
                     if 'applicant' in line.lower():
-                        applicant_count = line.strip()
-                        break
+                        # Extract just the count part
+                        match = re.search(r'((?:Over\s+)?(?:\d+,?)+\s+applicants?)', line, re.IGNORECASE)
+                        if match:
+                            applicant_count = match.group(1).strip()
+                            break
             except:
                 pass
             
@@ -658,7 +663,7 @@ class JobSearchScraper(BaseScraper):
                         if len(job_urls) == previous_url_count:
                             no_new_urls_count += 1
                             logger.debug(f"No new URLs (count: {no_new_urls_count}), current: {len(job_urls)}/{limit}")
-                            if no_new_urls_count >= max_scrolls:
+                            if no_new_urls_count >= 8:
                                 logger.info(f"No new URLs after {no_new_urls_count} consecutive scrolls, stopping")
                                 break
                         else:

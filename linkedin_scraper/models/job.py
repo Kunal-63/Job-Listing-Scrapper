@@ -23,6 +23,8 @@ class Job(BaseModel):
     founded: Optional[str] = None
     industry: Optional[str] = None
     company_size: Optional[str] = None
+    company_about: Optional[str] = None  # Company overview/description
+    company_website: Optional[str] = None  # Company website URL
     
     @field_validator('linkedin_url')
     @classmethod
