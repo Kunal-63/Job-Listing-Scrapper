@@ -1,11 +1,30 @@
 import asyncio
 import logging
 import sys
+import os
 import tkinter as tk
 from tkinter import messagebox
 import threading
 import subprocess
 from pathlib import Path
+
+# Fix for Playwright in frozen app:
+# PyInstaller's Playwright hook sets PLAYWRIGHT_BROWSERS_PATH to 0 (local).
+# This causes it to look for browsers in the read-only Program Files directory.
+# We unset this to allow Playwright to use the default User's AppData location.
+if getattr(sys, 'frozen', False):
+    import os
+    # Force Playwright to look in the standard user directory (User/AppData/Local/ms-playwright)
+    # This overrides PyInstaller's hook which forces it to look in the local _internal folder.
+    user_profile = os.environ.get('USERPROFILE')
+    if user_profile:
+        # Standard location for Windows
+        # We explicitly set this so both the runtime lookup and 'playwright install' 
+        # use the same global writable location.
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = os.path.join(user_profile, 'AppData', 'Local', 'ms-playwright')
+    elif "PLAYWRIGHT_BROWSERS_PATH" in os.environ:
+        # Fallback: just remove the local override if we can't determine user profile
+        del os.environ["PLAYWRIGHT_BROWSERS_PATH"]
 
 from mongo_client import get_db, get_client
 from linkedin_scraper import wait_for_manual_login
@@ -297,63 +316,133 @@ class LinkedInScraperApp:
         self.root.destroy()
     
 
-def _start_background_process(self):
-    """Start the actual background scraping process."""
-    try:
-        # Determine how to launch the scraper
-        if getattr(sys, 'frozen', False):
-            # Running as compiled exe - call self with flag
-            executable = sys.executable
-            args = [executable, "--scraper"]
-        else:
-            # Running as script
-            executable = sys.executable
-            script_path = Path(__file__).parent / "main.py"
-            args = [executable, str(script_path), "--scraper"]
-        
-        # Start as a detached background process
-        if sys.platform == "win32":
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            startupinfo.wShowWindow = subprocess.SW_HIDE
+    def _start_background_process(self):
+        """Start the actual background scraping process."""
+        try:
+            # Determine how to launch the scraper
+            if getattr(sys, 'frozen', False):
+                # Running as compiled exe - call self with flag
+                executable = sys.executable
+                args = [executable, "--scraper"]
+            else:
+                # Running as script
+                executable = sys.executable
+                script_path = Path(__file__).parent / "main.py"
+                args = [executable, str(script_path), "--scraper"]
             
-            subprocess.Popen(
-                args,
-                creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS,
-                startupinfo=startupinfo,
-                close_fds=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-        else:
-            subprocess.Popen(
-                args,
-                start_new_session=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
+            # Start as a detached background process
+            if sys.platform == "win32":
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = subprocess.SW_HIDE
+                
+                subprocess.Popen(
+                    args,
+                    creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS,
+                    startupinfo=startupinfo,
+                    close_fds=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+            else:
+                subprocess.Popen(
+                    args,
+                    start_new_session=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+            
+            logger.info("Background scraper process started successfully")
+            
+        except Exception as e:
+            logger.error(f"Error starting background process: {e}")
+            messagebox.showerror("Error", f"Failed to start background process: {str(e)}")
+
+
+def ensure_playwright(force=False):
+    """Ensure Playwright browsers are installed."""
+    try:
+        from playwright.sync_api import sync_playwright
+        logger.info("Checking Playwright browsers...")
         
-        logger.info("Background scraper process started successfully")
-        
+        needed = force
+        if not needed:
+            # Try to launch browser to verify installation
+            try:
+                with sync_playwright() as p:
+                    p.chromium.launch(headless=True).close()
+                    logger.info("Playwright browsers verified.")
+            except Exception:
+                needed = True
+            
+        if needed:
+            logger.info("Browsers not found (or forced). Installing...")
+            if not force: # Only show GUI message if not forced (installer handles UX)
+                messagebox.showinfo("First Time Setup", "Installing browser components...\nThis may take a few minutes. Please wait.")
+            
+            if getattr(sys, 'frozen', False):
+                # In frozen app, attempt to use internal CLI
+                try:
+                    # We need to monkeypatch sys.argv for the internal main function
+                    old_argv = sys.argv
+                    sys.argv = ["playwright", "install", "chromium"]
+                    
+                    from playwright.__main__ import main as pw_main
+                    try:
+                        pw_main()
+                    except SystemExit as e:
+                        # SystemExit is expected after install completes
+                        if e.code != 0:
+                            logger.warning(f"Playwright install exited with code {e.code} (may still have succeeded)")
+                    finally:
+                        sys.argv = old_argv
+                        
+                except Exception as e:
+                    logger.warning(f"Playwright install attempt: {e} (browsers may still be available)")
+                    # Don't show error - browsers might be pre-bundled or installed already
+            else:
+                # In script mode, use subprocess
+                result = subprocess.run(
+                    [sys.executable, "-m", "playwright", "install", "chromium"],
+                    capture_output=True,
+                    text=True
+                )
+                if result.returncode != 0:
+                    logger.warning(f"Playwright install returned code {result.returncode}: {result.stderr}")
+                    # Don't raise - browser might still be installed
+                else:
+                    logger.info("Browsers installed successfully")
+                
+            logger.info("Browser installation completed.")
+            
     except Exception as e:
-        logger.error(f"Error starting background process: {e}")
-        messagebox.showerror("Error", f"Failed to start background process: {str(e)}")
+        logger.warning(f"Playwright setup check: {e} (will attempt to continue)")
+        # Don't fail here - browsers might be already installed or available
+
 
 
 def main():
     """Main entry point."""
-    # Check for scraper mode
-    if len(sys.argv) > 1 and sys.argv[1] == "--scraper":
-        # Run background scraper
-        import background_scraper
-        asyncio.run(background_scraper.main())
-        return
+    # Check for CLI flags
+    if len(sys.argv) > 1:
+        if sys.argv[1] == "--scraper":
+            # Run background scraper
+            import background_scraper
+            asyncio.run(background_scraper.main())
+            return
+        elif sys.argv[1] == "--install-browsers":
+            # Just install browsers and exit
+            ensure_playwright(force=True)
+            return
 
     # Normal GUI mode
     # from local_db import ensure_db_running
     
     # Try to start local MongoDB
     # ensure_db_running()
+    
+    # Ensure Playwright browsers are installed (check only)
+    ensure_playwright(force=False)
     
     root = tk.Tk()
     app = LinkedInScraperApp(root)

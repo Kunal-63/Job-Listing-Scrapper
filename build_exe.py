@@ -44,13 +44,18 @@ def build_executable():
         "pyinstaller",
         "--noconfirm",
         "--clean",
-        "--windowed",  # No console window
+        "--windowed",
         "--name=LinkedInScraper",
-        "--add-data=linkedin_session.json;.",  # Include session template if exists
+        "--add-data=linkedin_session.json;.",
         "--collect-all=playwright",
         "--collect-all=pymongo",
+        "--hidden-import=bson",
+        "--hidden-import=dotenv",
+        "--hidden-import=pydantic",
         "main.py"
     ]
+
+
     
     print(f"Running: {' '.join(cmd)}")
     subprocess.check_call(cmd)
