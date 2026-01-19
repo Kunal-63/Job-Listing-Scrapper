@@ -69,7 +69,7 @@ class JobSearchScraper(BaseScraper):
         location: Optional[str] = None,
         limit: int = 25,
         search_url: Optional[str] = None,
-        max_concurrent: int = 5
+        max_concurrent: int = 3
     ) -> List[Job]:
         """
         Search for jobs on LinkedIn and scrape details from job and company pages with parallel processing.
@@ -86,7 +86,6 @@ class JobSearchScraper(BaseScraper):
         """
         logger.info(f"Starting job search: keywords='{keywords}', location='{location}', search_url='{search_url}'")
         
-        # Use provided search_url if available, otherwise build from keywords/location
         if search_url:
             url = search_url
             logger.info(f"Using provided search URL: {url}")
@@ -96,11 +95,9 @@ class JobSearchScraper(BaseScraper):
         
         await self.callback.on_start("JobSearch", url)
         
-        # Navigate to search results with faster timeout
         await self.navigate_and_wait(url, wait_until='domcontentloaded', timeout=30000)
         await self.callback.on_progress("Navigated to search results", 10)
         
-        # Wait for job listings to load (reduced timeout)
         try:
             await self.page.wait_for_selector('li[data-occludable-job-id]', timeout=5000)
             logger.info("Job listings loaded")
@@ -118,13 +115,11 @@ class JobSearchScraper(BaseScraper):
             logger.warning("No job URLs found!")
             return []
         
-        # PARALLEL PROCESSING: Scrape jobs in batches
         logger.info(f"Starting parallel scraping of {len(job_urls)} jobs with max {max_concurrent} concurrent tasks")
         jobs = await self._scrape_jobs_parallel(job_urls, max_concurrent)
         
         await self.callback.on_progress(f"Scraped {len(jobs)} jobs, fetching company details...", 70)
         
-        # PARALLEL PROCESSING: Scrape company details for all jobs
         logger.info(f"Starting parallel company scraping for {len(jobs)} jobs")
         jobs = await self._scrape_companies_parallel(jobs, max_concurrent)
         
@@ -169,47 +164,62 @@ class JobSearchScraper(BaseScraper):
         jobs = []
         semaphore = asyncio.Semaphore(max_concurrent)
         
-        async def scrape_single_job(url: str, index: int) -> Optional[Job]:
-            """Scrape a single job with semaphore control."""
+        async def scrape_single_job(url: str, index: int, max_retries: int = 2) -> Optional[Job]:
+            """Scrape a single job with retry logic."""
             async with semaphore:
-                try:
-                    logger.info(f"[{index + 1}/{len(job_urls)}] Scraping job: {url}")
-                    
-                    # Create a new page for this job to enable parallel processing
-                    async with async_playwright() as p:
-                        browser = await p.chromium.launch(headless=True)
-                        context = await browser.new_context()
-                        
-                        try:
-                            import json
-                            with open("linkedin_session.json", "r") as f:
-                                session_data = json.load(f)
-                                if "cookies" in session_data:
-                                    await context.add_cookies(session_data["cookies"])
-                        except:
-                            pass
-                        
-                        page = await context.new_page()
-                        job_scraper = JobScraper(page, SilentCallback())
-                        
-                        job = await job_scraper.scrape(url)
-                        
-                        await browser.close()
-                        
-                        if job:
-                            logger.info(f"✓ [{index + 1}/{len(job_urls)}] {job.job_title}")
-                            return job
+                for attempt in range(max_retries + 1):
+                    try:
+                        if attempt > 0:
+                            logger.info(f"[{index + 1}/{len(job_urls)}] Retry {attempt}/{max_retries}: {url}")
                         else:
-                            logger.warning(f"✗ [{index + 1}/{len(job_urls)}] Failed to scrape")
-                            return None
+                            logger.info(f"[{index + 1}/{len(job_urls)}] Scraping job: {url}")
+                        
+                        async with async_playwright() as p:
+                            browser = await p.chromium.launch(headless=True)
+                            context = await browser.new_context()
                             
-                except Exception as e:
-                    logger.warning(f"✗ [{index + 1}/{len(job_urls)}] Error: {e}")
-                    return None
+                            try:
+                                import json
+                                with open("linkedin_session.json", "r") as f:
+                                    session_data = json.load(f)
+                                    if "cookies" in session_data:
+                                        await context.add_cookies(session_data["cookies"])
+                            except:
+                                pass
+                            
+                            page = await context.new_page()
+                            job_scraper = JobScraper(page, SilentCallback())
+                            
+                            job = await job_scraper.scrape(url)
+                            
+                            await browser.close()
+                            
+                            if job:
+                                logger.info(f"[{index + 1}/{len(job_urls)}] {job.job_title}")
+                                return job
+                            else:
+                                if attempt < max_retries:
+                                    logger.warning(f"[{index + 1}/{len(job_urls)}] Failed, will retry...")
+                                    await asyncio.sleep(1)
+                                    continue
+                                else:
+                                    logger.warning(f"[{index + 1}/{len(job_urls)}] Failed after {max_retries} retries")
+                                    return None
+                                
+                    except Exception as e:
+                        error_msg = str(e)
+                        if attempt < max_retries:
+                            logger.warning(f"[{index + 1}/{len(job_urls)}] Error (will retry): {error_msg[:100]}")
+                            await asyncio.sleep(2)
+                            continue
+                        else:
+                            logger.warning(f"[{index + 1}/{len(job_urls)}] Error after {max_retries} retries: {error_msg[:100]}")
+                            return None
+                
+                return None
         
         tasks = [scrape_single_job(url, i) for i, url in enumerate(job_urls)]
         
-        # Execute all tasks and gather results
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
         for result in results:
@@ -222,73 +232,97 @@ class JobSearchScraper(BaseScraper):
     async def _scrape_companies_parallel(self, jobs: List[Job], max_concurrent: int) -> List[Job]:
         """
         Scrape company details for multiple jobs in parallel.
+        IMPORTANT: Jobs are ALWAYS returned, even if company scraping fails.
         
         Args:
             jobs: List of Job objects to enrich with company data
             max_concurrent: Maximum number of concurrent tasks
             
         Returns:
-            List of Job objects enriched with company details
+            List of Job objects (all jobs, with or without company details)
         """
         import asyncio
         from playwright.async_api import async_playwright
         
         semaphore = asyncio.Semaphore(max_concurrent)
         
-        async def scrape_single_company(job: Job, index: int) -> Job:
-            """Scrape company details for a single job with semaphore control."""
+        async def scrape_single_company(job: Job, index: int, max_retries: int = 1) -> Job:
+            """Scrape company details for a single job with retry logic. Always returns the job."""
             if not job.company_linkedin_url:
+                logger.info(f"[{index + 1}/{len(jobs)}] No company URL for {job.company}, skipping company scrape")
                 return job
                 
             async with semaphore:
-                try:
-                    logger.info(f"[{index + 1}/{len(jobs)}] Fetching company: {job.company}")
-                    
-                    # Create a new page for this company to enable parallel processing
-                    async with async_playwright() as p:
-                        browser = await p.chromium.launch(headless=True)
-                        context = await browser.new_context()
+                for attempt in range(max_retries + 1):
+                    try:
+                        if attempt > 0:
+                            logger.info(f"[{index + 1}/{len(jobs)}] Retry {attempt}/{max_retries} for company: {job.company}")
+                        else:
+                            logger.info(f"[{index + 1}/{len(jobs)}] Fetching company: {job.company}")
                         
-                        # Load session cookies if available
-                        try:
-                            import json
-                            with open("linkedin_session.json", "r") as f:
-                                session_data = json.load(f)
-                                if "cookies" in session_data:
-                                    await context.add_cookies(session_data["cookies"])
-                        except:
-                            pass
+                        async with async_playwright() as p:
+                            browser = await p.chromium.launch(headless=True)
+                            context = await browser.new_context()
+                            
+                            try:
+                                import json
+                                with open("linkedin_session.json", "r") as f:
+                                    session_data = json.load(f)
+                                    if "cookies" in session_data:
+                                        await context.add_cookies(session_data["cookies"])
+                            except:
+                                pass
+                            
+                            page = await context.new_page()
+                            company_scraper = CompanyScraper(page, SilentCallback())
+                            
+                            company = await company_scraper.scrape(job.company_linkedin_url)
+                            
+                            await browser.close()
+                            
+                            if company:
+                                job.headquarters = company.headquarters
+                                job.founded = company.founded
+                                job.industry = company.industry
+                                job.company_size = company.company_size
+                                logger.info(f"[{index + 1}/{len(jobs)}] Company details added")
+                                return job  # Success, return enriched job
+                            else:
+                                if attempt < max_retries:
+                                    logger.warning(f"[{index + 1}/{len(jobs)}] Company scrape failed, will retry...")
+                                    await asyncio.sleep(1)
+                                    continue
+                                else:
+                                    logger.warning(f"[{index + 1}/{len(jobs)}] Company scrape failed, keeping job without company details")
+                                    return job  # Return job without company details
                         
-                        page = await context.new_page()
-                        company_scraper = CompanyScraper(page, SilentCallback())
-                        
-                        company = await company_scraper.scrape(job.company_linkedin_url)
-                        
-                        await browser.close()
-                        
-                        if company:
-                            job.headquarters = company.headquarters
-                            job.founded = company.founded
-                            job.industry = company.industry
-                            job.company_size = company.company_size
-                            logger.info(f"✓ [{index + 1}/{len(jobs)}] Company details added")
-                        
-                except Exception as e:
-                    logger.warning(f"✗ [{index + 1}/{len(jobs)}] Company error: {e}")
+                    except Exception as e:
+                        error_msg = str(e)
+                        if attempt < max_retries:
+                            logger.warning(f"[{index + 1}/{len(jobs)}] Company error (will retry): {error_msg[:100]}")
+                            await asyncio.sleep(2)
+                            continue
+                        else:
+                            logger.warning(f"{index + 1}/{len(jobs)}] Company error, keeping job without company details: {error_msg[:100]}")
+                            return job  # Return job without company details
                 
-                return job
+                return job  # Fallback: always return the job
         
-        # Create tasks for all companies
         tasks = [scrape_single_company(job, i) for i, job in enumerate(jobs)]
         
-        # Execute all tasks and gather results
         enriched_jobs = await asyncio.gather(*tasks, return_exceptions=True)
         
-        # Filter out exceptions
-        valid_jobs = [job for job in enriched_jobs if isinstance(job, Job)]
+        final_jobs = []
+        for i, result in enumerate(enriched_jobs):
+            if isinstance(result, Job):
+                final_jobs.append(result)
+            elif isinstance(result, Exception):
+                logger.error(f"Unexpected exception for company {i+1}, keeping job anyway: {result}")
+                if i < len(jobs):
+                    final_jobs.append(jobs[i])
         
-        logger.info(f"Parallel company scraping complete: {len(valid_jobs)}/{len(jobs)} successful")
-        return valid_jobs
+        logger.info(f"Parallel company scraping complete: {len(final_jobs)}/{len(jobs)} jobs returned")
+        return final_jobs
 
     
     
@@ -305,28 +339,22 @@ class JobSearchScraper(BaseScraper):
         jobs = []
         
         try:
-            # Find all job items in the list
             job_items = await self.page.locator('li[data-occludable-job-id]').all()
             logger.info(f"Found {len(job_items)} job items in list")
             
-            # Limit the items
             job_items = job_items[:limit]
             
-            # Create tasks for parallel processing
             import asyncio
             tasks = []
             
             for idx, job_item in enumerate(job_items):
                 try:
-                    # Get job ID from data attribute
                     job_id = await job_item.get_attribute('data-occludable-job-id')
                     logger.debug(f"Processing job {idx + 1}: ID {job_id}")
                     
-                    # Click on the job item
                     await job_item.click()
                     await self.wait_and_focus(0.2)
                     
-                    # Extract job details
                     job = await self._extract_job_from_details_panel(job_id)
                     
                     if job:
@@ -363,7 +391,6 @@ class JobSearchScraper(BaseScraper):
             applicant_count = None
             job_description = None
             
-            # Fast extraction - no extra waits
             try:
                 title = await self.page.locator('h1').first.inner_text()
                 job_title = title.strip() if title else None
@@ -443,13 +470,15 @@ class JobSearchScraper(BaseScraper):
         seen_urls = set()
         
         try:
-            logger.info(f"⚡ Fast extraction: Getting {limit} job URLs...")
+            logger.info(f"Fast extraction: Getting {limit} job URLs...")
             
-            # First, try to extract all visible URLs without scrolling
+            # Wait longer for initial content to fully render
+            logger.info("Waiting for all visible job items to fully render with links...")
+            await asyncio.sleep(3.0)
+            
             job_items = await self.page.locator('li[data-occludable-job-id]').all()
             logger.info(f"Found {len(job_items)} jobs initially visible")
             
-            # Use JavaScript for faster bulk extraction
             try:
                 urls_js = await self.page.evaluate('''() => {
                     const items = document.querySelectorAll('li[data-occludable-job-id]');
@@ -469,24 +498,25 @@ class JobSearchScraper(BaseScraper):
                         job_urls.append(url)
                         seen_urls.add(url)
                 
-                logger.info(f"✓ Extracted {len(job_urls)} URLs from visible items")
+                logger.info(f"Extracted {len(job_urls)} URLs from visible items")
             except Exception as e:
                 logger.debug(f"JS extraction failed, using fallback: {e}")
             
-            # If we need more URLs, scroll to load more (optimized)
             if len(job_urls) < limit:
                 logger.info(f"Need {limit - len(job_urls)} more URLs, scrolling the job list container...")
+                logger.info("Waiting for lazy-loaded content to appear...")
                 
-                max_scrolls = 15  # Reduced from 50
+                await asyncio.sleep(2.0)
+                
+                max_scrolls = 30 
                 no_new_urls_count = 0
                 previous_url_count = len(job_urls)
                 
                 for scroll_attempt in range(max_scrolls):
                     if len(job_urls) >= limit:
+                        logger.info(f"Reached target: {len(job_urls)}/{limit} URLs")
                         break
                     
-                    # Scroll the LEFT-SIDE job list container (not the main page!)
-                    # Try multiple selectors to find the scrollable container
                     try:
                         scroll_result = await self.page.evaluate('''() => {
                             // Try multiple selectors to find the job list container
@@ -498,25 +528,9 @@ class JobSearchScraper(BaseScraper):
                                 container = jobItems[0].closest('ul');
                             }
                             
-                            // Strategy 2: Find by common class patterns
-                            if (!container) {
-                                const selectors = [
-                                    'ul.jobs-search__results-list',
-                                    'div.jobs-search-results-list',
-                                    'div[class*="scaffold-layout__list"]',
-                                    'div.scaffold-layout__list-container',
-                                    'ul[class*="scaffold-layout"]'
-                                ];
-                                
-                                for (const selector of selectors) {
-                                    container = document.querySelector(selector);
-                                    if (container) break;
-                                }
-                            }
-                            
-                            // Strategy 3: Find scrollable parent of job items
-                            if (!container && jobItems.length > 0) {
-                                let el = jobItems[0];
+                            // Strategy 2: Find scrollable parent of the UL
+                            if (container) {
+                                let el = container;
                                 while (el && el !== document.body) {
                                     const style = window.getComputedStyle(el);
                                     if (style.overflowY === 'auto' || style.overflowY === 'scroll') {
@@ -527,15 +541,45 @@ class JobSearchScraper(BaseScraper):
                                 }
                             }
                             
+                            // Strategy 3: Try common class patterns if still not found
+                            if (!container || container.tagName === 'UL') {
+                                const selectors = [
+                                    'div.jobs-search-results-list',
+                                    'div[class*="scaffold-layout__list"]',
+                                    'div.scaffold-layout__list-container'
+                                ];
+                                
+                                for (const selector of selectors) {
+                                    const elem = document.querySelector(selector);
+                                    if (elem) {
+                                        container = elem;
+                                        break;
+                                    }
+                                }
+                            }
+                            
                             if (container) {
-                                // Scroll the container
+                                // Scroll the container incrementally
                                 const scrollHeight = container.scrollHeight;
                                 const currentScroll = container.scrollTop;
-                                container.scrollBy(0, window.innerHeight * 2);
+                                const clientHeight = container.clientHeight;
+                                
+                                // Scroll by 2 viewports using auto behavior
+                                container.scrollBy({ top: clientHeight * 2, behavior: 'auto' });
+                                
+                                const newScroll = container.scrollTop;
+                                const scrolled = newScroll > currentScroll;
+                                
+                                // More conservative: only consider end if we haven't scrolled at all
+                                const nearBottom = (newScroll + clientHeight + 300) >= scrollHeight;
                                 
                                 return {
                                     success: true,
-                                    scrolled: container.scrollTop > currentScroll,
+                                    scrolled: scrolled,
+                                    scrollTop: newScroll,
+                                    scrollHeight: scrollHeight,
+                                    clientHeight: clientHeight,
+                                    nearBottom: nearBottom,
                                     selector: container.tagName + '.' + Array.from(container.classList).slice(0, 2).join('.')
                                 };
                             }
@@ -545,17 +589,22 @@ class JobSearchScraper(BaseScraper):
                         
                         if scroll_result.get('success'):
                             if scroll_attempt == 0:
-                                logger.info(f"✓ Found scrollable container: {scroll_result.get('selector', 'unknown')}")
+                                logger.info(f"Found scrollable container: {scroll_result.get('selector', 'unknown')}")
+                            
+                            scrolled = scroll_result.get('scrolled', False)
+                            nearBottom = scroll_result.get('nearBottom', False)
+                            
+                            if not scrolled:
+                                logger.debug("Could not scroll further")
                         else:
                             logger.warning(f"Could not find job list container: {scroll_result.get('error')}")
                         
-                        # Reduced wait time from 1.5s to 0.4s (slightly more than before for lazy loading)
-                        await asyncio.sleep(0.4)
+                        logger.debug(f"Scroll {scroll_attempt + 1}: Waiting for page to load new content...")
+                        await asyncio.sleep(2.5)
                         
                     except Exception as e:
                         logger.debug(f"Scroll error: {e}")
                     
-                    # Extract new URLs using JavaScript
                     try:
                         new_urls = await self.page.evaluate('''() => {
                             const items = document.querySelectorAll('li[data-occludable-job-id]');
@@ -575,24 +624,22 @@ class JobSearchScraper(BaseScraper):
                                 job_urls.append(url)
                                 seen_urls.add(url)
                         
-                        # Check if we got new URLs
                         if len(job_urls) == previous_url_count:
                             no_new_urls_count += 1
-                            if no_new_urls_count >= 2:  # Reduced from 3
-                                logger.info(f"No new URLs after {no_new_urls_count} scrolls, stopping")
+                            logger.debug(f"No new URLs (count: {no_new_urls_count}), current: {len(job_urls)}/{limit}")
+                            if no_new_urls_count >= 5:
+                                logger.info(f"No new URLs after {no_new_urls_count} consecutive scrolls, stopping")
                                 break
                         else:
                             no_new_urls_count = 0
                             previous_url_count = len(job_urls)
-                            # Log progress every 5 URLs
-                            if len(job_urls) % 5 == 0:
-                                logger.info(f"Progress: {len(job_urls)}/{limit} URLs extracted")
+                            logger.info(f"Progress: {len(job_urls)}/{limit} URLs extracted (scroll {scroll_attempt + 1})")
                         
                     except Exception as e:
                         logger.debug(f"URL extraction error: {e}")
                         break
             
-            logger.info(f"✅ Successfully extracted {len(job_urls)} unique job URLs")
+            logger.info(f"Successfully extracted {len(job_urls)} unique job URLs")
         
         except Exception as e:
             logger.warning(f"Error extracting job URLs: {e}")

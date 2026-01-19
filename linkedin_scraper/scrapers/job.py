@@ -73,8 +73,8 @@ class JobScraper(BaseScraper):
         logger.info(f"Starting job scraping: {linkedin_url}")
         await self.callback.on_start("Job", linkedin_url)
         
-        # Navigate to job page with faster timeout
-        await self.navigate_and_wait(linkedin_url, wait_until='domcontentloaded', timeout=20000)
+        # Navigate to job page with increased timeout to handle slow pages
+        await self.navigate_and_wait(linkedin_url, wait_until='domcontentloaded', timeout=45000)
         await self.callback.on_progress("Navigated to job page", 10)
         
         await self.check_rate_limit()

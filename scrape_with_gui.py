@@ -78,7 +78,7 @@ class LinkedInJobScraperGUI:
         self.is_logged_in = False
         self.scraped_jobs = []
         self.is_scraping = False
-        self.disable_js = tk.BooleanVar(value=True)  # Disable JS by default for speed
+        self.disable_js = tk.BooleanVar(value=False)  # Disable JS by default for speed
         
         # Logging handlers (will be set after UI is built)
         self.login_log_handler = None
@@ -241,7 +241,7 @@ The session will be saved to linkedin_session.json for future use.
         
         ttk.Checkbutton(
             options_frame,
-            text="⚡ Disable JavaScript (FASTER - recommended for speed, may miss dynamic content)",
+            text="Disable JavaScript (FASTER - recommended for speed, may miss dynamic content)",
             variable=self.disable_js
         ).pack(anchor=tk.W, pady=(0, 10))
         
@@ -378,43 +378,43 @@ The session will be saved to linkedin_session.json for future use.
         try:
             asyncio.run(self._login_async())
         except Exception as e:
-            self.log_progress(f"❌ Login failed: {str(e)}")
+            self.log_progress(f"Login failed: {str(e)}")
             messagebox.showerror("Login Error", f"Login failed: {str(e)}")
             self.login_button.config(state=tk.NORMAL)
     
     async def _login_async(self):
         """Async login process"""
         try:
-            self.log_progress("🔄 Starting browser...")
+            self.log_progress("Starting browser...")
             
             async with BrowserManager(headless=False, disable_javascript=False) as browser:
                 self.browser = browser
                 
-                self.log_progress("📱 Navigating to LinkedIn login page...")
+                self.log_progress("Navigating to LinkedIn login page...")
                 await browser.page.goto("https://www.linkedin.com/login")
                 
-                self.log_progress("🔐 Please log in to LinkedIn in the browser window...")
-                self.log_progress("⏳ Waiting for login (5 minutes timeout)...")
+                self.log_progress("Please log in to LinkedIn in the browser window...")
+                self.log_progress("Waiting for login (5 minutes timeout)...")
                 
                 # Wait for manual login
                 from linkedin_scraper import wait_for_manual_login
                 await wait_for_manual_login(browser.page, timeout=300000)
                 
                 # Save session
-                self.log_progress("💾 Saving session to linkedin_session.json...")
+                self.log_progress("Saving session to linkedin_session.json...")
                 await browser.save_session("linkedin_session.json")
                 
-                self.log_progress("✅ Login successful!")
+                self.log_progress("Login successful!")
                 self.is_logged_in = True
-                self.status_label.config(text="✓ Logged in", style='Success.TLabel')
+                self.status_label.config(text="Logged in", style='Success.TLabel')
                 self.login_button.config(state=tk.DISABLED)
                 self.logout_button.config(state=tk.NORMAL)
                 self.scrape_button.config(state=tk.NORMAL)
                 
-                # messagebox.showinfo("Success", "Login successful! You can now scrape jobs.")W
+
         
         except Exception as e:
-            self.log_progress(f"❌ Error: {str(e)}")
+            self.log_progress(f"Error: {str(e)}")
             self.login_button.config(state=tk.NORMAL)
             raise
     
@@ -455,7 +455,7 @@ The session will be saved to linkedin_session.json for future use.
         try:
             asyncio.run(self._scrape_async())
         except Exception as e:
-            self.log_progress(f"❌ Scraping failed: {str(e)}", tab="scraper")
+            self.log_progress(f"Scraping failed: {str(e)}", tab="scraper")
             messagebox.showerror("Scraping Error", f"Scraping failed: {str(e)}")
             self._reset_scraping_buttons()
     
@@ -467,18 +467,18 @@ The session will be saved to linkedin_session.json for future use.
             max_concurrent = int(self.concurrent_var.get())
             disable_js = self.disable_js.get()
             
-            self.log_progress(f"📄 Loading job listing: {url}", tab="scraper")
-            self.log_progress(f"⚙️ Settings: Max jobs={max_jobs}, Concurrent tasks={max_concurrent}, JS disabled={disable_js}", tab="scraper")
+            self.log_progress(f"Loading job listing: {url}", tab="scraper")
+            self.log_progress(f"Settings: Max jobs={max_jobs}, Concurrent tasks={max_concurrent}, JS disabled={disable_js}", tab="scraper")
             if disable_js:
-                self.log_progress("⚡ Performance mode: JavaScript disabled for faster scraping", tab="scraper")
+                self.log_progress("Performance mode: JavaScript disabled for faster scraping", tab="scraper")
             
             async with BrowserManager(headless=True, disable_javascript=disable_js) as browser:
                 await browser.load_session("linkedin_session.json")
-                self.log_progress("✓ Session loaded", tab="scraper")
+                self.log_progress("Session loaded", tab="scraper")
                 
                 # Search for jobs with parallel processing
                 search_scraper = JobSearchScraper(browser.page)
-                self.log_progress(f"🔍 Searching for jobs (max: {max_jobs})...", tab="scraper")
+                self.log_progress(f"Searching for jobs (max: {max_jobs})...", tab="scraper")
                 
                 # Pass the concurrent parameter to enable parallel processing
                 self.scraped_jobs = await search_scraper.search(
@@ -487,22 +487,22 @@ The session will be saved to linkedin_session.json for future use.
                     max_concurrent=max_concurrent
                 )
                 
-                self.log_progress(f"✓ Scraped {len(self.scraped_jobs)} jobs successfully", tab="scraper")
+                self.log_progress(f"Scraped {len(self.scraped_jobs)} jobs successfully", tab="scraper")
                 
                 for i, job in enumerate(self.scraped_jobs, 1):
                     if not self.is_scraping:
-                        self.log_progress("⏹ Scraping stopped by user", tab="scraper")
+                        self.log_progress("Scraping stopped by user", tab="scraper")
                         break
                     # Only log every 5th job to save time
                     if i % 5 == 0 or i == 1 or i == len(self.scraped_jobs):
-                        self.log_progress(f"[{i}/{len(self.scraped_jobs)}] ✓ {job.job_title[:40]}", tab="scraper")
+                        self.log_progress(f"[{i}/{len(self.scraped_jobs)}] {job.job_title[:40]}", tab="scraper")
                 
-                self.log_progress(f"\n✅ Scraping complete! Total jobs: {len(self.scraped_jobs)}", tab="scraper")
+                self.log_progress(f"\nScraping complete! Total jobs: {len(self.scraped_jobs)}", tab="scraper")
                 self._display_results()
                 messagebox.showinfo("Success", f"Scraped {len(self.scraped_jobs)} jobs successfully!")
         
         except Exception as e:
-            self.log_progress(f"❌ Error: {str(e)}", tab="scraper")
+            self.log_progress(f"Error: {str(e)}", tab="scraper")
             raise
         
         finally:
@@ -512,7 +512,7 @@ The session will be saved to linkedin_session.json for future use.
         """Stop the scraping process"""
         self.is_scraping = False
         self.stop_button.config(state=tk.DISABLED)
-        self.log_progress("⏹ Stopping scraping...", tab="scraper")
+        self.log_progress("Stopping scraping...", tab="scraper")
     
     def _reset_scraping_buttons(self):
         """Reset scraping buttons to normal state"""
@@ -617,7 +617,7 @@ DESCRIPTION:
                 json.dump(data, f, indent=2, ensure_ascii=False)
             
             messagebox.showinfo("Success", f"Data exported to {filename}")
-            self.log_progress(f"📁 Exported data to {filename}", tab="scraper")
+            self.log_progress(f"Exported data to {filename}", tab="scraper")
         
         except Exception as e:
             messagebox.showerror("Export Error", f"Failed to export: {str(e)}")

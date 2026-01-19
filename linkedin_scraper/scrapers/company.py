@@ -73,8 +73,8 @@ class CompanyScraper(BaseScraper):
         logger.info(f"Starting company scraping: {linkedin_url}")
         await self.callback.on_start("company", linkedin_url)
         
-        # Navigate to company page with faster timeout
-        await self.navigate_and_wait(linkedin_url, wait_until='domcontentloaded', timeout=20000)
+        # Navigate to company page with increased timeout to handle slow pages
+        await self.navigate_and_wait(linkedin_url, wait_until='domcontentloaded', timeout=45000)
         await self.callback.on_progress("Navigated to company page", 10)
         
         await self.check_rate_limit()
@@ -82,11 +82,19 @@ class CompanyScraper(BaseScraper):
         name = await self._get_name()
         await self.callback.on_progress(f"Got company name: {name}", 20)
         
+        # Navigate to About section to get detailed company information
+        about_section_url = linkedin_url.rstrip('/') + '/about/'
+        logger.info(f"Navigating to About section: {about_section_url}")
+        await self.navigate_and_wait(about_section_url, wait_until='domcontentloaded', timeout=45000)
+        await self.callback.on_progress("Navigated to About section", 30)
+        
+        await self.wait_and_focus(1.0)
+        
         about_us = await self._get_about()
-        await self.callback.on_progress("Got about section", 30)
+        await self.callback.on_progress("Got about section", 40)
         
         overview = await self._get_overview()
-        await self.callback.on_progress("Got overview details", 50)
+        await self.callback.on_progress("Got overview details", 60)
         
         company = Company(
             linkedin_url=linkedin_url,
@@ -133,7 +141,7 @@ class CompanyScraper(BaseScraper):
     
     async def _get_overview(self) -> dict:
         """
-        Extract company overview details (website, industry, size, etc.).
+        Extract company overview details from About section (website, industry, size, etc.).
         
         Returns dict with: website, phone, headquarters, founded, industry,
         company_type, company_size, specialties
@@ -150,75 +158,70 @@ class CompanyScraper(BaseScraper):
         }
         
         try:
-            # LinkedIn's new structure (as of 2024+): Uses info items instead of dt/dd
-            info_items = await self.page.locator('.org-top-card-summary-info-list__info-item').all()
+            # Parse dt/dd structure from About section
+            logger.debug("Extracting company details from dt/dd structure...")
             
-            for item in info_items:
-                text = await item.inner_text()
-                text = text.strip()
-                text_lower = text.lower()
+            dl_elements = await self.page.locator('dl').all()
+            logger.debug(f"Found {len(dl_elements)} dl elements")
+            
+            for dl in dl_elements:
+                dt_elements = await dl.locator('dt').all()
                 
-                # Detect what kind of information this is based on content patterns
-                if 'employee' in text_lower or 'k+' in text_lower:
-                    # Company size (e.g., "10K+ employees", "1,001-5,000 employees")
-                    overview['company_size'] = text
-                elif ',' in text and any(loc in text for loc in ['Washington', 'California', 'New York', 'Texas', 'United States', 'United Kingdom']):
-                    # Headquarters (e.g., "Redmond, Washington", "Mountain View, California")
-                    overview['headquarters'] = text
-                elif any(ind in text_lower for ind in ['software', 'technology', 'financial', 'healthcare', 'retail', 'manufacturing', 'consulting', 'education']):
-                    # Industry (e.g., "Software Development", "Financial Services")
-                    overview['industry'] = text
-                elif 'follower' in text_lower:
-                    # Skip follower count
-                    continue
-            
-            # Try to find website link
-            # LinkedIn often puts website in the about section or as a link
-            try:
-                links = await self.page.locator('a').all()
-                for link in links:
-                    href = await link.get_attribute('href')
-                    if href and 'linkedin' not in href and ('http' in href or 'www.' in href):
-                        link_text = await link.inner_text()
-                        # Skip navigation links, look for actual website URLs
-                        if link_text and any(word in link_text.lower() for word in ['learn more', 'website', 'visit']):
-                            overview['website'] = href
-                            break
-            except Exception as e:
-                logger.debug(f"Error finding website: {e}")
-            
-            # Fallback: Try old dt/dd structure (for backwards compatibility)
-            if not any(overview.values()):
-                dt_elements = await self.page.locator('dt').all()
-                
-                for dt in dt_elements:
-                    label = await dt.inner_text()
-                    label = label.strip().lower()
-                    
-                    dd = dt.locator('xpath=following-sibling::dd[1]')
-                    value = await dd.inner_text() if await dd.count() > 0 else None
-                    
-                    if value:
-                        value = value.strip()
+                for i, dt in enumerate(dt_elements):
+                    try:
+                        # Get the label from dt
+                        label_text = await dt.inner_text()
+                        label = label_text.strip().lower()
                         
-                        if 'website' in label:
-                            overview['website'] = value
-                        elif 'phone' in label:
-                            overview['phone'] = value
-                        elif 'headquarters' in label or 'location' in label:
-                            overview['headquarters'] = value
-                        elif 'founded' in label:
-                            overview['founded'] = value
-                        elif 'industry' in label or 'industries' in label:
-                            overview['industry'] = value
-                        elif 'company type' in label or 'type' in label:
-                            overview['company_type'] = value
-                        elif 'company size' in label or 'size' in label:
-                            overview['company_size'] = value
-                        elif 'specialt' in label:
-                            overview['specialties'] = value
+                        # Get the corresponding dd value
+                        # The dd immediately follows the dt in the dl
+                        dds = await dl.locator('dd').all()
+                        
+                        if i < len(dds):
+                            dd = dds[i]
+                            value = await dd.inner_text()
+                            value = value.strip() if value else None
+                            
+                            logger.debug(f"Found: {label} = {value}")
+                            
+                            # Map to overview fields
+                            if 'website' in label or 'url' in label:
+                                # Check if there's a link in the dd
+                                link = await dd.locator('a').first.get_attribute('href')
+                                if link:
+                                    overview['website'] = link
+                                else:
+                                    overview['website'] = value
+                                    
+                            elif 'phone' in label:
+                                overview['phone'] = value
+                                
+                            elif 'headquarters' in label or 'location' in label or 'address' in label:
+                                overview['headquarters'] = value
+                                
+                            elif 'founded' in label or 'year' in label:
+                                overview['founded'] = value
+                                
+                            elif 'industry' in label or 'industries' in label:
+                                overview['industry'] = value
+                                
+                            elif 'company type' in label or 'type' in label:
+                                if 'type' not in label or 'company' in label:
+                                    overview['company_type'] = value
+                                    
+                            elif 'company size' in label or 'size' in label or 'employee' in label:
+                                overview['company_size'] = value
+                                
+                            elif 'specialt' in label or 'expertise' in label:
+                                overview['specialties'] = value
+                    
+                    except Exception as e:
+                        logger.debug(f"Error parsing dt/dd pair {i}: {e}")
+                        continue
+            
+            logger.info(f"Extracted overview: {[f'{k}={v}' for k,v in overview.items() if v]}")
             
         except Exception as e:
-            logger.debug(f"Error getting company overview: {e}")
+            logger.debug(f"Error extracting company overview: {e}")
         
         return overview
