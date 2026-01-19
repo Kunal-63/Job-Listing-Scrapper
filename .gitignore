@@ -4,8 +4,11 @@
 __pycache__/
 **/__pycache__/
 *.py[cod]
+**/*.py[cod]
 *.pyd
+**/*.pyd
 *$py.class
+
 
 # ===============================
 # Virtual environments
