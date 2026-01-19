@@ -296,53 +296,65 @@ class LinkedInScraperApp:
         self.root.quit()
         self.root.destroy()
     
-    def _start_background_process(self):
-        """Start the actual background scraping process."""
-        try:
-            # Run the background scraper script
-            script_path = Path(__file__).parent / "background_scraper.py"
+
+def _start_background_process(self):
+    """Start the actual background scraping process."""
+    try:
+        # Determine how to launch the scraper
+        if getattr(sys, 'frozen', False):
+            # Running as compiled exe - call self with flag
+            executable = sys.executable
+            args = [executable, "--scraper"]
+        else:
+            # Running as script
+            executable = sys.executable
+            script_path = Path(__file__).parent / "main.py"
+            args = [executable, str(script_path), "--scraper"]
+        
+        # Start as a detached background process
+        if sys.platform == "win32":
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = subprocess.SW_HIDE
             
-            # Get pythonw.exe path (windowless Python interpreter)
-            python_exe = sys.executable
-            pythonw_exe = python_exe.replace("python.exe", "pythonw.exe")
-            
-            # If pythonw doesn't exist, fall back to using CREATE_NO_WINDOW flag
-            if not Path(pythonw_exe).exists():
-                pythonw_exe = python_exe
-            
-            # Start as a detached background process without console window
-            if sys.platform == "win32":
-                # Windows: Use pythonw or CREATE_NO_WINDOW flag
-                startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                startupinfo.wShowWindow = subprocess.SW_HIDE
-                
-                subprocess.Popen(
-                    [pythonw_exe, str(script_path)],
-                    creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS,
-                    startupinfo=startupinfo,
-                    close_fds=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
-                )
-            else:
-                # Unix-like systems
-                subprocess.Popen(
-                    [pythonw_exe, str(script_path)],
-                    start_new_session=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
-                )
-            
-            logger.info("Background scraper process started successfully")
-            
-        except Exception as e:
-            logger.error(f"Error starting background process: {e}")
-            messagebox.showerror("Error", f"Failed to start background process: {str(e)}")
+            subprocess.Popen(
+                args,
+                creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS,
+                startupinfo=startupinfo,
+                close_fds=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+        else:
+            subprocess.Popen(
+                args,
+                start_new_session=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+        
+        logger.info("Background scraper process started successfully")
+        
+    except Exception as e:
+        logger.error(f"Error starting background process: {e}")
+        messagebox.showerror("Error", f"Failed to start background process: {str(e)}")
 
 
 def main():
     """Main entry point."""
+    # Check for scraper mode
+    if len(sys.argv) > 1 and sys.argv[1] == "--scraper":
+        # Run background scraper
+        import background_scraper
+        asyncio.run(background_scraper.main())
+        return
+
+    # Normal GUI mode
+    # from local_db import ensure_db_running
+    
+    # Try to start local MongoDB
+    # ensure_db_running()
+    
     root = tk.Tk()
     app = LinkedInScraperApp(root)
     root.mainloop()
@@ -350,3 +362,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
