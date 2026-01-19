@@ -20,7 +20,9 @@ venv/
 .venv/
 env/
 ENV/
-.env/
+.env
+.conda/
+conda/
 
 # ===============================
 # Python build & packaging
