@@ -1,16 +1,26 @@
-/.venv
-/FIX_SUMMARY.md
-/Job Listing.html
-/Job Listing_files
-
-# Python
+# ===============================
+# Python cache & compiled files
+# ===============================
 __pycache__/
+**/__pycache__/
 *.py[cod]
+*.pyd
 *$py.class
-*.so
+
+# ===============================
+# Virtual environments
+# ===============================
+venv/
+.venv/
+env/
+ENV/
+.env/
+
+# ===============================
+# Python build & packaging
+# ===============================
 .Python
 build/
-develop-eggs/
 dist/
 downloads/
 eggs/
@@ -25,83 +35,109 @@ wheels/
 .installed.cfg
 *.egg
 MANIFEST
+
+# ===============================
+# Logs
+# ===============================
+*.log
+logs/
 pip-log.txt
 pip-delete-this-directory.txt
 
-# Virtual environments
-venv/
-.venv/
-env/
-ENV/
-.env
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-.DS_Store
-*.sublime-project
-*.sublime-workspace
-
-# Testing
+# ===============================
+# Testing / coverage
+# ===============================
 .pytest_cache/
 .tox/
 .coverage
 htmlcov/
 
+# ===============================
 # Playwright
+# ===============================
 .playwright/
 browser_downloads/
 
-# Session and authentication
+# ===============================
+# Sessions & auth (LinkedIn etc.)
+# ===============================
 linkedin_session.json
 session.json
 *.session
 
-# Logs
-*.log
-logs/
-
-# Database
+# ===============================
+# Database files
+# ===============================
 *.db
 *.sqlite
 *.sqlite3
 
+# ===============================
 # Temporary files
+# ===============================
 *.tmp
 *.bak
 .temp/
 temp/
 
-# OS specific
-Thumbs.db
+# ===============================
+# IDE / Editor files
+# ===============================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+
+# ===============================
+# OS-specific files
+# ===============================
 .DS_Store
+Thumbs.db
 .AppleDouble
 .LSOverride
 
-# Job listing HTML files (can be regenerated)
+# ===============================
+# HTML job listing files (generated)
+# ===============================
 Job Listing*
 *.html
+/Job Listing_files
 
-# Node modules
+# ===============================
+# Node
+# ===============================
 node_modules/
 
-# mypy
+# ===============================
+# Type checking
+# ===============================
 .mypy_cache/
 .dmypy.json
 dmypy.json
 
-# Jupyter Notebook
-.ipynb_checkpoints
-.jupyter
+# ===============================
+# Jupyter
+# ===============================
+.ipynb_checkpoints/
+.jupyter/
 
+# ===============================
 # Exported data
+# ===============================
 export_*/
 *.xlsx
 *.csv
 
-# Downloaded images/assets
+# ===============================
+# Assets / downloads
+# ===============================
 assets/
 downloads/
+
+# ===============================
+# Project-specific
+# ===============================
+/FIX_SUMMARY.md

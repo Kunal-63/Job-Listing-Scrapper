@@ -10,6 +10,8 @@ This application provides a graphical interface to:
 """
 
 import asyncio
+import logging
+import sys
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
 import threading
@@ -20,6 +22,46 @@ from datetime import datetime
 from linkedin_scraper.core.browser import BrowserManager
 from linkedin_scraper.scrapers.job_search import JobSearchScraper
 from linkedin_scraper.scrapers.job import JobScraper
+
+# Configure root logger for console output
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%H:%M:%S',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+
+logger = logging.getLogger(__name__)
+
+
+class GUILogHandler(logging.Handler):
+    """Custom logging handler that writes to GUI text widget"""
+    
+    def __init__(self, text_widget, tab_name="login"):
+        super().__init__()
+        self.text_widget = text_widget
+        self.tab_name = tab_name
+        
+    def emit(self, record):
+        """Emit a log record to the GUI text widget"""
+        try:
+            msg = self.format(record)
+            # Schedule GUI update in main thread
+            self.text_widget.after(0, self._append_to_widget, msg)
+        except Exception:
+            self.handleError(record)
+    
+    def _append_to_widget(self, msg):
+        """Append message to text widget (must be called from main thread)"""
+        try:
+            self.text_widget.config(state=tk.NORMAL)
+            self.text_widget.insert(tk.END, msg + '\n')
+            self.text_widget.see(tk.END)
+            self.text_widget.config(state=tk.DISABLED)
+        except Exception as e:
+            print(f"Error appending to GUI: {e}")
 
 
 class LinkedInJobScraperGUI:
@@ -36,6 +78,11 @@ class LinkedInJobScraperGUI:
         self.is_logged_in = False
         self.scraped_jobs = []
         self.is_scraping = False
+        self.disable_js = tk.BooleanVar(value=True)  # Disable JS by default for speed
+        
+        # Logging handlers (will be set after UI is built)
+        self.login_log_handler = None
+        self.scraper_log_handler = None
         
         # Configure styles
         self.setup_styles()
@@ -57,6 +104,9 @@ class LinkedInJobScraperGUI:
         self.build_login_ui()
         self.build_scraper_ui()
         self.build_results_ui()
+        
+        # Setup logging handlers after UI is built
+        self.setup_logging()
     
     def setup_styles(self):
         """Configure ttk styles"""
@@ -139,7 +189,6 @@ The session will be saved to linkedin_session.json for future use.
         main_container = ttk.Frame(self.scraper_frame, padding="20")
         main_container.pack(fill=tk.BOTH, expand=True)
         
-        # Header
         header = ttk.Label(main_container, text="Job Search Scraper", style='Header.TLabel')
         header.pack(pady=(0, 20))
         
@@ -160,7 +209,6 @@ The session will be saved to linkedin_session.json for future use.
             foreground="gray"
         ).pack(anchor=tk.W)
         
-        # Options frame
         options_frame = ttk.LabelFrame(main_container, text="Scraping Options", padding="15")
         options_frame.pack(fill=tk.X, pady=(0, 20))
         
@@ -186,9 +234,17 @@ The session will be saved to linkedin_session.json for future use.
             textvariable=self.concurrent_var,
             width=10
         )
-        concurrent_spin.pack(anchor=tk.W)
+        concurrent_spin.pack(anchor=tk.W, pady=(0, 15))
         
-        # Button frame
+        # JavaScript option
+        ttk.Label(options_frame, text="Performance Options:").pack(anchor=tk.W, pady=(0, 5))
+        
+        ttk.Checkbutton(
+            options_frame,
+            text="⚡ Disable JavaScript (FASTER - recommended for speed, may miss dynamic content)",
+            variable=self.disable_js
+        ).pack(anchor=tk.W, pady=(0, 10))
+        
         button_frame = ttk.Frame(main_container)
         button_frame.pack(fill=tk.X, pady=20)
         
@@ -208,7 +264,6 @@ The session will be saved to linkedin_session.json for future use.
         )
         self.stop_button.pack(side=tk.LEFT, padx=5)
         
-        # Progress frame
         progress_frame = ttk.LabelFrame(main_container, text="Scraping Progress", padding="15")
         progress_frame.pack(fill=tk.BOTH, expand=True)
         
@@ -280,20 +335,37 @@ The session will be saved to linkedin_session.json for future use.
         # Bind double click to show details
         self.results_tree.bind("<Double-1>", self.show_job_details)
     
+    def setup_logging(self):
+        """Setup logging handlers to write to GUI and console"""
+        # Create formatter
+        formatter = logging.Formatter(
+            '%(asctime)s - %(levelname)s - %(message)s',
+            datefmt='%H:%M:%S'
+        )
+        
+        # Create GUI handlers for both tabs
+        self.login_log_handler = GUILogHandler(self.progress_text, "login")
+        self.login_log_handler.setFormatter(formatter)
+        self.login_log_handler.setLevel(logging.INFO)
+        
+        self.scraper_log_handler = GUILogHandler(self.scraper_progress_text, "scraper")
+        self.scraper_log_handler.setFormatter(formatter)
+        self.scraper_log_handler.setLevel(logging.INFO)
+        
+        # Add handlers to root logger so all modules use them
+        root_logger = logging.getLogger()
+        root_logger.addHandler(self.login_log_handler)
+        root_logger.addHandler(self.scraper_log_handler)
+        
+        logger.info("Logging system initialized - logs will appear in terminal and GUI")
+    
     def log_progress(self, message: str, tab: str = "login"):
-        """Log progress message to appropriate tab"""
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        log_message = f"[{timestamp}] {message}\n"
-        
+        """Log progress message to appropriate tab (legacy method, now uses logging)"""
+        # Use the logging system instead
         if tab == "login":
-            text_widget = self.progress_text
+            logger.info(f"[LOGIN] {message}")
         else:
-            text_widget = self.scraper_progress_text
-        
-        text_widget.config(state=tk.NORMAL)
-        text_widget.insert(tk.END, log_message)
-        text_widget.see(tk.END)
-        text_widget.config(state=tk.DISABLED)
+            logger.info(f"[SCRAPER] {message}")
     
     def start_login(self):
         """Start login process in a separate thread"""
@@ -315,7 +387,7 @@ The session will be saved to linkedin_session.json for future use.
         try:
             self.log_progress("🔄 Starting browser...")
             
-            async with BrowserManager(headless=False) as browser:
+            async with BrowserManager(headless=False, disable_javascript=False) as browser:
                 self.browser = browser
                 
                 self.log_progress("📱 Navigating to LinkedIn login page...")
@@ -339,7 +411,7 @@ The session will be saved to linkedin_session.json for future use.
                 self.logout_button.config(state=tk.NORMAL)
                 self.scrape_button.config(state=tk.NORMAL)
                 
-                messagebox.showinfo("Success", "Login successful! You can now scrape jobs.")
+                # messagebox.showinfo("Success", "Login successful! You can now scrape jobs.")W
         
         except Exception as e:
             self.log_progress(f"❌ Error: {str(e)}")
@@ -393,11 +465,14 @@ The session will be saved to linkedin_session.json for future use.
             url = self.url_input.get().strip()
             max_jobs = int(self.max_jobs_var.get())
             max_concurrent = int(self.concurrent_var.get())
+            disable_js = self.disable_js.get()
             
             self.log_progress(f"📄 Loading job listing: {url}", tab="scraper")
-            self.log_progress(f"⚙️ Settings: Max jobs={max_jobs}, Concurrent tasks={max_concurrent}", tab="scraper")
+            self.log_progress(f"⚙️ Settings: Max jobs={max_jobs}, Concurrent tasks={max_concurrent}, JS disabled={disable_js}", tab="scraper")
+            if disable_js:
+                self.log_progress("⚡ Performance mode: JavaScript disabled for faster scraping", tab="scraper")
             
-            async with BrowserManager(headless=False) as browser:
+            async with BrowserManager(headless=True, disable_javascript=disable_js) as browser:
                 await browser.load_session("linkedin_session.json")
                 self.log_progress("✓ Session loaded", tab="scraper")
                 
@@ -447,11 +522,9 @@ The session will be saved to linkedin_session.json for future use.
     
     def _display_results(self):
         """Display scraped jobs in results tab"""
-        # Clear existing items
         for item in self.results_tree.get_children():
             self.results_tree.delete(item)
         
-        # Add new items
         for job in self.scraped_jobs:
             self.results_tree.insert(
                 "",
@@ -465,7 +538,6 @@ The session will be saved to linkedin_session.json for future use.
                 )
             )
         
-        # Update count
         self.jobs_count_label.config(text=str(len(self.scraped_jobs)))
     
     def show_job_details(self, event):

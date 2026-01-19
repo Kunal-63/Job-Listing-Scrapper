@@ -4,6 +4,7 @@ Company scraper for LinkedIn.
 Extracts company information from LinkedIn company pages.
 """
 import logging
+import sys
 from typing import Optional
 from playwright.async_api import Page
 
@@ -12,7 +13,27 @@ from ..core.exceptions import ProfileNotFoundError
 from ..callbacks import ProgressCallback, SilentCallback
 from .base import BaseScraper
 
+# Configure logging with console handler
 logger = logging.getLogger(__name__)
+
+# Only configure if not already configured
+if not logger.handlers:
+    logger.setLevel(logging.INFO)
+    
+    # Create console handler with formatting
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.INFO)
+    
+    # Create formatter
+    formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%H:%M:%S'
+    )
+    console_handler.setFormatter(formatter)
+    
+    # Add handler to logger
+    logger.addHandler(console_handler)
+    logger.propagate = False
 
 
 class CompanyScraper(BaseScraper):
@@ -52,25 +73,21 @@ class CompanyScraper(BaseScraper):
         logger.info(f"Starting company scraping: {linkedin_url}")
         await self.callback.on_start("company", linkedin_url)
         
-        # Navigate to company page
-        await self.navigate_and_wait(linkedin_url)
+        # Navigate to company page with faster timeout
+        await self.navigate_and_wait(linkedin_url, wait_until='domcontentloaded', timeout=20000)
         await self.callback.on_progress("Navigated to company page", 10)
         
-        # Check if page exists
         await self.check_rate_limit()
         
-        # Extract basic info
         name = await self._get_name()
         await self.callback.on_progress(f"Got company name: {name}", 20)
         
         about_us = await self._get_about()
         await self.callback.on_progress("Got about section", 30)
         
-        # Extract overview details
         overview = await self._get_overview()
         await self.callback.on_progress("Got overview details", 50)
         
-        # Create company object
         company = Company(
             linkedin_url=linkedin_url,
             name=name,
@@ -104,7 +121,6 @@ class CompanyScraper(BaseScraper):
             for section in sections:
                 section_text = await section.inner_text()
                 if 'About us' in section_text[:50]:
-                    # Get the content paragraph
                     paragraphs = await section.locator('p').all()
                     if paragraphs:
                         about = await paragraphs[0].inner_text()

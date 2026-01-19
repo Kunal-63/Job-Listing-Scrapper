@@ -54,14 +54,11 @@ class PersonScraper(BaseScraper):
             await self.page.wait_for_selector('main', timeout=10000)
             await self.wait_and_focus(1)
             
-            # Get name and location
             name, location = await self._get_name_and_location()
             await self.callback.on_progress(f"Got name: {name}", 20)
             
-            # Check open to work
             open_to_work = await self._check_open_to_work()
             
-            # Get about
             about = await self._get_about()
             await self.callback.on_progress("Got about section", 30)
             
@@ -69,15 +66,12 @@ class PersonScraper(BaseScraper):
             await self.scroll_page_to_half()
             await self.scroll_page_to_bottom(pause_time=0.5, max_scrolls=3)
             
-            # Get experiences
             experiences = await self._get_experiences(linkedin_url)
             await self.callback.on_progress(f"Got {len(experiences)} experiences", 60)
             
-            # Get educations
             educations = await self._get_educations(linkedin_url)
             await self.callback.on_progress(f"Got {len(educations)} educations", 80)
             
-            # Build Person model
             person = Person(
                 linkedin_url=linkedin_url,
                 name=name,

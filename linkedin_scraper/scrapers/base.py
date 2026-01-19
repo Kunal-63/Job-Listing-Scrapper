@@ -153,16 +153,25 @@ class BaseScraper:
         except PlaywrightTimeoutError:
             logger.warning("Navigation did not complete within timeout")
     
-    async def navigate_and_wait(self, url: str, wait_until: str = 'domcontentloaded', timeout: int = 60000) -> None:
+    async def navigate_and_wait(self, url: str, wait_until: str = 'domcontentloaded', timeout: int = 30000, enable_js: bool = False) -> None:
         """
-        Navigate to URL and wait for page load.
+        Navigate to URL and wait for page load (optimized for speed).
         
         Args:
             url: URL to navigate to
-            wait_until: Wait condition (domcontentloaded, networkidle, load)
-            timeout: Timeout in milliseconds (default: 60000 = 60s)
+            wait_until: Wait condition (domcontentloaded, networkidle, load) - default: domcontentloaded for speed
+            timeout: Timeout in milliseconds (default: 30000 = 30s)
+            enable_js: If True, enable JavaScript before navigating (for dynamic content)
         """
-        logger.info(f"Navigating to: {url}")
+        logger.info(f"Navigating to: {url} (JS enabled: {enable_js}, wait_until: {wait_until})")
+        
+        # Enable JavaScript if needed
+        if enable_js:
+            try:
+                await self.page.context.browser.enable_javascript_on_page(self.page)
+            except:
+                pass
+        
         # Use type: ignore to bypass strict typing
         await self.page.goto(url, wait_until=wait_until, timeout=timeout)  # type: ignore
         await self.check_rate_limit()

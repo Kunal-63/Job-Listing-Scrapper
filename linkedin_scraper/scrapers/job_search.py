@@ -3,7 +3,9 @@ Job search scraper for LinkedIn.
 
 Searches for jobs on LinkedIn and extracts job details from detail and company pages.
 """
+import asyncio
 import logging
+import sys
 from typing import Optional, List
 from urllib.parse import urlencode
 from playwright.async_api import Page
@@ -14,7 +16,27 @@ from .base import BaseScraper
 from .job import JobScraper
 from .company import CompanyScraper
 
+# Configure logging with console handler
 logger = logging.getLogger(__name__)
+
+# Only configure if not already configured
+if not logger.handlers:
+    logger.setLevel(logging.INFO)
+    
+    # Create console handler with formatting
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.INFO)
+    
+    # Create formatter
+    formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%H:%M:%S'
+    )
+    console_handler.setFormatter(formatter)
+    
+    # Add handler to logger
+    logger.addHandler(console_handler)
+    logger.propagate = False
 
 
 class JobSearchScraper(BaseScraper):
@@ -62,8 +84,6 @@ class JobSearchScraper(BaseScraper):
         Returns:
             List of Job objects with all details
         """
-        import asyncio
-        
         logger.info(f"Starting job search: keywords='{keywords}', location='{location}', search_url='{search_url}'")
         
         # Use provided search_url if available, otherwise build from keywords/location
@@ -76,21 +96,20 @@ class JobSearchScraper(BaseScraper):
         
         await self.callback.on_start("JobSearch", url)
         
-        # Navigate to search results
-        await self.navigate_and_wait(url)
+        # Navigate to search results with faster timeout
+        await self.navigate_and_wait(url, wait_until='domcontentloaded', timeout=30000)
         await self.callback.on_progress("Navigated to search results", 10)
         
-        # Wait for job listings to load
+        # Wait for job listings to load (reduced timeout)
         try:
-            await self.page.wait_for_selector('li[data-occludable-job-id]', timeout=10000)
+            await self.page.wait_for_selector('li[data-occludable-job-id]', timeout=5000)
             logger.info("Job listings loaded")
         except Exception as e:
-            logger.warning(f"Timeout waiting for listings: {e}")
+            logger.warning(f"Timeout waiting for listings (trying anyway): {e}")
         
-        await self.wait_and_focus(0.5)
+        await self.wait_and_focus(0.3)
         await self.callback.on_progress("Loaded job listings", 20)
         
-        # Extract job URLs from the search results list
         logger.info(f"Extracting up to {limit} job URLs...")
         job_urls = await self._extract_job_urls(limit)
         await self.callback.on_progress(f"Found {len(job_urls)} job URLs", 30)
@@ -161,7 +180,6 @@ class JobSearchScraper(BaseScraper):
                         browser = await p.chromium.launch(headless=True)
                         context = await browser.new_context()
                         
-                        # Load session cookies if available
                         try:
                             import json
                             with open("linkedin_session.json", "r") as f:
@@ -189,13 +207,11 @@ class JobSearchScraper(BaseScraper):
                     logger.warning(f"✗ [{index + 1}/{len(job_urls)}] Error: {e}")
                     return None
         
-        # Create tasks for all jobs
         tasks = [scrape_single_job(url, i) for i, url in enumerate(job_urls)]
         
         # Execute all tasks and gather results
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        # Filter out None values and exceptions
         for result in results:
             if isinstance(result, Job):
                 jobs.append(result)
@@ -415,7 +431,7 @@ class JobSearchScraper(BaseScraper):
     
     async def _extract_job_urls(self, limit: int) -> List[str]:
         """
-        Extract job URLs from search results (legacy method).
+        Extract job URLs from search results with optimized scrolling.
         
         Args:
             limit: Maximum number of URLs to extract
@@ -424,68 +440,161 @@ class JobSearchScraper(BaseScraper):
             List of job posting URLs
         """
         job_urls = []
+        seen_urls = set()
         
         try:
-            # Method 1: Try to find job links by job ID (from data attribute)
+            logger.info(f"⚡ Fast extraction: Getting {limit} job URLs...")
+            
+            # First, try to extract all visible URLs without scrolling
             job_items = await self.page.locator('li[data-occludable-job-id]').all()
-            logger.info(f"Found {len(job_items)} job items")
+            logger.info(f"Found {len(job_items)} jobs initially visible")
             
-            seen_urls = set()
-            for job_item in job_items:
-                if len(job_urls) >= limit:
-                    break
+            # Use JavaScript for faster bulk extraction
+            try:
+                urls_js = await self.page.evaluate('''() => {
+                    const items = document.querySelectorAll('li[data-occludable-job-id]');
+                    const urls = [];
+                    items.forEach(item => {
+                        const link = item.querySelector('a[href*="/jobs/view/"]');
+                        if (link && link.href) {
+                            const cleanUrl = link.href.split('?')[0];
+                            urls.push(cleanUrl);
+                        }
+                    });
+                    return urls;
+                }''')
                 
-                try:
-                    # Find the job title link within this item - updated selector
-                    job_link = job_item.locator('a.job-card-list__title--link, a.job-card-container__link').first
-                    href = await job_link.get_attribute('href')
-                    
-                    if href and '/jobs/view/' in href:
-                        # Clean URL (remove query params)
-                        clean_url = href.split('?')[0] if '?' in href else href
-                        
-                        # Ensure full URL
-                        if not clean_url.startswith('http'):
-                            clean_url = f"https://www.linkedin.com{clean_url}"
-                        
-                        # Avoid duplicates
-                        if clean_url not in seen_urls:
-                            job_urls.append(clean_url)
-                            seen_urls.add(clean_url)
-                            logger.debug(f"Extracted job URL: {clean_url}")
-                except Exception as e:
-                    logger.debug(f"Error extracting job from item: {e}")
-                    continue
+                for url in urls_js:
+                    if url not in seen_urls and len(job_urls) < limit:
+                        job_urls.append(url)
+                        seen_urls.add(url)
+                
+                logger.info(f"✓ Extracted {len(job_urls)} URLs from visible items")
+            except Exception as e:
+                logger.debug(f"JS extraction failed, using fallback: {e}")
             
-            # Method 2: Fallback - find all job view links if Method 1 didn't work
-            if len(job_urls) == 0:
-                logger.info("Method 1 failed, trying fallback method...")
-                job_links = await self.page.locator('a[href*="/jobs/view/"]').all()
+            # If we need more URLs, scroll to load more (optimized)
+            if len(job_urls) < limit:
+                logger.info(f"Need {limit - len(job_urls)} more URLs, scrolling the job list container...")
                 
-                for link in job_links:
+                max_scrolls = 15  # Reduced from 50
+                no_new_urls_count = 0
+                previous_url_count = len(job_urls)
+                
+                for scroll_attempt in range(max_scrolls):
                     if len(job_urls) >= limit:
                         break
                     
+                    # Scroll the LEFT-SIDE job list container (not the main page!)
+                    # Try multiple selectors to find the scrollable container
                     try:
-                        href = await link.get_attribute('href')
-                        if href and '/jobs/view/' in href:
-                            # Clean URL (remove query params)
-                            clean_url = href.split('?')[0] if '?' in href else href
+                        scroll_result = await self.page.evaluate('''() => {
+                            // Try multiple selectors to find the job list container
+                            let container = null;
                             
-                            # Ensure full URL
-                            if not clean_url.startswith('http'):
-                                clean_url = f"https://www.linkedin.com{clean_url}"
+                            // Strategy 1: Find UL containing job items
+                            const jobItems = document.querySelectorAll('li[data-occludable-job-id]');
+                            if (jobItems.length > 0) {
+                                container = jobItems[0].closest('ul');
+                            }
                             
-                            # Avoid duplicates
-                            if clean_url not in seen_urls:
-                                job_urls.append(clean_url)
-                                seen_urls.add(clean_url)
+                            // Strategy 2: Find by common class patterns
+                            if (!container) {
+                                const selectors = [
+                                    'ul.jobs-search__results-list',
+                                    'div.jobs-search-results-list',
+                                    'div[class*="scaffold-layout__list"]',
+                                    'div.scaffold-layout__list-container',
+                                    'ul[class*="scaffold-layout"]'
+                                ];
+                                
+                                for (const selector of selectors) {
+                                    container = document.querySelector(selector);
+                                    if (container) break;
+                                }
+                            }
+                            
+                            // Strategy 3: Find scrollable parent of job items
+                            if (!container && jobItems.length > 0) {
+                                let el = jobItems[0];
+                                while (el && el !== document.body) {
+                                    const style = window.getComputedStyle(el);
+                                    if (style.overflowY === 'auto' || style.overflowY === 'scroll') {
+                                        container = el;
+                                        break;
+                                    }
+                                    el = el.parentElement;
+                                }
+                            }
+                            
+                            if (container) {
+                                // Scroll the container
+                                const scrollHeight = container.scrollHeight;
+                                const currentScroll = container.scrollTop;
+                                container.scrollBy(0, window.innerHeight * 2);
+                                
+                                return {
+                                    success: true,
+                                    scrolled: container.scrollTop > currentScroll,
+                                    selector: container.tagName + '.' + Array.from(container.classList).slice(0, 2).join('.')
+                                };
+                            }
+                            
+                            return { success: false, error: 'Container not found' };
+                        }''')
+                        
+                        if scroll_result.get('success'):
+                            if scroll_attempt == 0:
+                                logger.info(f"✓ Found scrollable container: {scroll_result.get('selector', 'unknown')}")
+                        else:
+                            logger.warning(f"Could not find job list container: {scroll_result.get('error')}")
+                        
+                        # Reduced wait time from 1.5s to 0.4s (slightly more than before for lazy loading)
+                        await asyncio.sleep(0.4)
+                        
                     except Exception as e:
-                        logger.debug(f"Error extracting job URL: {e}")
-                        continue
+                        logger.debug(f"Scroll error: {e}")
+                    
+                    # Extract new URLs using JavaScript
+                    try:
+                        new_urls = await self.page.evaluate('''() => {
+                            const items = document.querySelectorAll('li[data-occludable-job-id]');
+                            const urls = [];
+                            items.forEach(item => {
+                                const link = item.querySelector('a[href*="/jobs/view/"]');
+                                if (link && link.href) {
+                                    const cleanUrl = link.href.split('?')[0];
+                                    urls.push(cleanUrl);
+                                }
+                            });
+                            return urls;
+                        }''')
+                        
+                        for url in new_urls:
+                            if url not in seen_urls and len(job_urls) < limit:
+                                job_urls.append(url)
+                                seen_urls.add(url)
+                        
+                        # Check if we got new URLs
+                        if len(job_urls) == previous_url_count:
+                            no_new_urls_count += 1
+                            if no_new_urls_count >= 2:  # Reduced from 3
+                                logger.info(f"No new URLs after {no_new_urls_count} scrolls, stopping")
+                                break
+                        else:
+                            no_new_urls_count = 0
+                            previous_url_count = len(job_urls)
+                            # Log progress every 5 URLs
+                            if len(job_urls) % 5 == 0:
+                                logger.info(f"Progress: {len(job_urls)}/{limit} URLs extracted")
+                        
+                    except Exception as e:
+                        logger.debug(f"URL extraction error: {e}")
+                        break
+            
+            logger.info(f"✅ Successfully extracted {len(job_urls)} unique job URLs")
         
         except Exception as e:
             logger.warning(f"Error extracting job URLs: {e}")
         
-        logger.info(f"Successfully extracted {len(job_urls)} unique job URLs")
         return job_urls

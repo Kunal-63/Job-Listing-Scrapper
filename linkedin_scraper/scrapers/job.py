@@ -4,6 +4,7 @@ Job scraper for LinkedIn.
 Extracts job posting information from LinkedIn job pages.
 """
 import logging
+import sys
 from typing import Optional
 from playwright.async_api import Page
 
@@ -12,7 +13,27 @@ from ..core.exceptions import ProfileNotFoundError
 from ..callbacks import ProgressCallback, SilentCallback
 from .base import BaseScraper
 
+# Configure logging with console handler
 logger = logging.getLogger(__name__)
+
+# Only configure if not already configured
+if not logger.handlers:
+    logger.setLevel(logging.INFO)
+    
+    # Create console handler with formatting
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.INFO)
+    
+    # Create formatter
+    formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%H:%M:%S'
+    )
+    console_handler.setFormatter(formatter)
+    
+    # Add handler to logger
+    logger.addHandler(console_handler)
+    logger.propagate = False
 
 
 class JobScraper(BaseScraper):
@@ -52,14 +73,12 @@ class JobScraper(BaseScraper):
         logger.info(f"Starting job scraping: {linkedin_url}")
         await self.callback.on_start("Job", linkedin_url)
         
-        # Navigate to job page
-        await self.navigate_and_wait(linkedin_url)
+        # Navigate to job page with faster timeout
+        await self.navigate_and_wait(linkedin_url, wait_until='domcontentloaded', timeout=20000)
         await self.callback.on_progress("Navigated to job page", 10)
         
-        # Check if page exists
         await self.check_rate_limit()
         
-        # Extract job details
         job_title = await self._get_job_title()
         await self.callback.on_progress(f"Got job title: {job_title}", 20)
         
@@ -81,7 +100,6 @@ class JobScraper(BaseScraper):
         company_url = await self._get_company_url()
         await self.callback.on_progress("Got company URL", 90)
         
-        # Create job object
         job = Job(
             linkedin_url=linkedin_url,
             job_title=job_title,

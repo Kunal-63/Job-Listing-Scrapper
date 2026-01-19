@@ -191,14 +191,12 @@ async def scroll_to_bottom(page: Page, pause_time: float = 1.0, max_scrolls: int
         max_scrolls: Maximum number of scroll attempts
     """
     for i in range(max_scrolls):
-        # Get current scroll position
         previous_height = await page.evaluate('document.body.scrollHeight')
         
         # Scroll down
         await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
         await asyncio.sleep(pause_time)
         
-        # Check if we've reached the bottom
         new_height = await page.evaluate('document.body.scrollHeight')
         if new_height == previous_height:
             logger.debug(f"Reached bottom after {i + 1} scrolls")

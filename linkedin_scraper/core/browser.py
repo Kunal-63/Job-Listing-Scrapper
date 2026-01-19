@@ -21,6 +21,7 @@ class BrowserManager:
         slow_mo: int = 0,
         viewport: Optional[Dict[str, int]] = None,
         user_agent: Optional[str] = None,
+        disable_javascript: bool = True,
         **launch_options: Any
     ):
         """
@@ -31,12 +32,14 @@ class BrowserManager:
             slow_mo: Slow down operations by specified milliseconds
             viewport: Browser viewport size (default: 1280x720)
             user_agent: Custom user agent string
+            disable_javascript: Disable JavaScript by default for faster loading (default: True)
             **launch_options: Additional Playwright launch options
         """
         self.headless = headless
         self.slow_mo = slow_mo
         self.viewport = viewport or {"width": 1280, "height": 720}
         self.user_agent = user_agent
+        self.disable_javascript = disable_javascript
         self.launch_options = launch_options
         
         self._playwright: Optional[Playwright] = None
@@ -81,7 +84,11 @@ class BrowserManager:
             # Create initial page
             self._page = await self._context.new_page()
             
-            logger.info("Browser context and page created")
+            # Disable JavaScript if configured
+            if self.disable_javascript:
+                await self._page.context.route('**/*.{js,json}', lambda route: route.abort())
+            
+            logger.info(f"Browser context and page created (JavaScript disabled: {self.disable_javascript})")
             
         except Exception as e:
             await self.close()
@@ -111,9 +118,12 @@ class BrowserManager:
         except Exception as e:
             logger.error(f"Error closing browser: {e}")
     
-    async def new_page(self) -> Page:
+    async def new_page(self, disable_javascript: Optional[bool] = None) -> Page:
         """
         Create a new page in the current context.
+        
+        Args:
+            disable_javascript: Override JavaScript setting for this page (default: uses instance setting)
         
         Returns:
             New Playwright page
@@ -122,7 +132,26 @@ class BrowserManager:
             raise RuntimeError("Browser context not initialized. Call start() first.")
         
         page = await self._context.new_page()
+        
+        # Disable JavaScript if configured
+        js_disabled = disable_javascript if disable_javascript is not None else self.disable_javascript
+        if js_disabled:
+            await page.context.route('**/*.{js,json}', lambda route: route.abort())
+        
         return page
+    
+    async def enable_javascript_on_page(self, page: Page) -> None:
+        """
+        Enable JavaScript on a specific page (after being disabled).
+        
+        Args:
+            page: Playwright page to enable JavaScript on
+        """
+        try:
+            await page.unroute('**/*.{js,json}')
+            logger.info("JavaScript enabled on page")
+        except Exception as e:
+            logger.debug(f"Could not enable JavaScript: {e}")
     
     @property
     def page(self) -> Page:
@@ -203,7 +232,6 @@ class BrowserManager:
             user_agent=self.user_agent
         )
         
-        # Create new page
         if self._page:
             await self._page.close()
         self._page = await self._context.new_page()
