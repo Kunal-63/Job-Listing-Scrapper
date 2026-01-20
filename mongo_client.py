@@ -9,11 +9,11 @@ load_dotenv()
 
 
 def get_mongo_uri() -> str:
-    return os.environ.get("MONGO_URI", "mongodb://localhost:27017")
+    return "mongodb+srv://root:root@cluster0.kiptyit.mongodb.net/"
 
 
 def get_db_name() -> str:
-    return os.environ.get("MONGO_DB", "jobs_db")
+    return "jobs_db"
 
 
 def get_client() -> MongoClient:

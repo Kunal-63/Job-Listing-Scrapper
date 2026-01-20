@@ -7,14 +7,8 @@ from tkinter import messagebox
 import threading
 import subprocess
 from pathlib import Path
-
-# Fix for Playwright in frozen app:
-# PyInstaller's Playwright hook sets PLAYWRIGHT_BROWSERS_PATH to 0 (local).
-# This causes it to look for browsers in the read-only Program Files directory.
-# We unset this to allow Playwright to use the default User's AppData location.
-if getattr(sys, 'frozen', False):
-    if "PLAYWRIGHT_BROWSERS_PATH" in os.environ:
-        del os.environ["PLAYWRIGHT_BROWSERS_PATH"]
+import json
+import platform
 
 from mongo_client import get_db, get_client
 from linkedin_scraper import wait_for_manual_login
@@ -29,6 +23,62 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+# Define AppData directory for user data (cross-platform)
+if platform.system() == "Darwin":  # macOS
+    APP_DATA_DIR = Path.home() / "Library" / "Application Support" / "LinkedInScraper"
+elif platform.system() == "Windows":
+    APP_DATA_DIR = Path.home() / "AppData" / "Local" / "LinkedInScraper"
+else:  # Linux
+    APP_DATA_DIR = Path.home() / ".local" / "share" / "LinkedInScraper"
+
+APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+# Session file in AppData
+SESSION_FILE = APP_DATA_DIR / "linkedin_session.json"
+
+# Log file in AppData
+LOG_FILE = APP_DATA_DIR / "scraper_background.log"
+
+
+def setup_playwright_path():
+    """Set up Playwright to use bundled browsers when running as packaged app."""
+    if getattr(sys, 'frozen', False):
+        # Running as compiled/packaged executable
+        if platform.system() == "Darwin":  # macOS
+            # py2app bundle structure
+            base_path = Path(sys.executable).parent.parent / "Resources"
+        else:  # Windows
+            base_path = Path(sys.executable).parent
+        
+        # Check for bundled browsers
+        bundled_browsers = base_path / "ms-playwright"
+        
+        if bundled_browsers.exists():
+            logger.info(f"Using bundled browsers at: {bundled_browsers}")
+            os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(bundled_browsers)
+            
+            # Also set driver path
+            driver_path = base_path / "playwright" / "driver"
+            if driver_path.exists():
+                os.environ["PLAYWRIGHT_DRIVER_PATH"] = str(driver_path)
+            
+            return True
+        else:
+            logger.warning(f"Bundled browsers not found at: {bundled_browsers}")
+            # Fall back to system installation
+            if platform.system() == "Darwin":
+                browsers_path = Path.home() / ".cache" / "ms-playwright"
+            else:
+                browsers_path = Path.home() / "AppData" / "Local" / "ms-playwright"
+            
+            if browsers_path.exists():
+                logger.info(f"Using system browsers at: {browsers_path}")
+                os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(browsers_path)
+                return True
+            return False
+    
+    return True  # Not frozen, use normal Playwright
 
 
 class LinkedInScraperApp:
@@ -48,8 +98,12 @@ class LinkedInScraperApp:
         # Current screen
         self.current_screen = None
         
-        # Show login screen
-        self.show_login_screen()
+        # Check if already logged in
+        if SESSION_FILE.exists():
+            self.is_logged_in = True
+            self.show_dashboard()
+        else:
+            self.show_login_screen()
     
     def clear_screen(self):
         """Clear current screen."""
@@ -190,8 +244,8 @@ class LinkedInScraperApp:
             asyncio.run(self._login_async())
         except Exception as e:
             logger.error(f"Login failed: {e}")
-            messagebox.showerror("Login Error", f"Login failed: {str(e)}")
-            self.connect_button.config(state=tk.NORMAL, text="🔗 Connect your LinkedIn")
+            self.root.after(0, lambda: messagebox.showerror("Login Error", f"Login failed: {str(e)}"))
+            self.root.after(0, lambda: self.connect_button.config(state=tk.NORMAL, text="🔗 Connect your LinkedIn"))
     
     async def _login_async(self):
         """Async LinkedIn login process."""
@@ -205,9 +259,9 @@ class LinkedInScraperApp:
                 logger.info("Waiting for manual login (5 minutes timeout)...")
                 await wait_for_manual_login(browser.page, timeout=300000)
                 
-                # Save session
-                logger.info("Saving session...")
-                await browser.save_session("linkedin_session.json")
+                # Save session to AppData
+                logger.info(f"Saving session to: {SESSION_FILE}")
+                await browser.save_session(str(SESSION_FILE))
                 
                 self.is_logged_in = True
                 logger.info("Login successful!")
@@ -228,7 +282,7 @@ class LinkedInScraperApp:
         self.current_screen.pack(fill=tk.BOTH, expand=True, padx=40, pady=40)
         
         # Keep window size
-        self.root.geometry("500x400")
+        self.root.geometry("500x450")
         
         # Header
         header = tk.Label(
@@ -243,12 +297,12 @@ class LinkedInScraperApp:
         # Status message
         status = tk.Label(
             self.current_screen,
-            text="✓ Successfully connected to LinkedIn",
+            text="✅ Successfully connected to LinkedIn",
             font=("Arial", 12),
             bg="#f8f9fa",
             fg="#10b981"
         )
-        status.pack(pady=(0, 40))
+        status.pack(pady=(0, 30))
         
         # Start Scraping Button - Large and prominent
         self.scrape_button = tk.Button(
@@ -278,6 +332,33 @@ class LinkedInScraperApp:
             justify=tk.CENTER
         )
         info.pack(pady=(10, 0))
+        
+        # Logout button (small, at bottom)
+        logout_button = tk.Button(
+            self.current_screen,
+            text="🔓 Logout",
+            font=("Arial", 9),
+            bg="#f8f9fa",
+            fg="#6b7280",
+            activebackground="#f8f9fa",
+            activeforeground="#ef4444",
+            relief=tk.FLAT,
+            cursor="hand2",
+            command=self.logout
+        )
+        logout_button.pack(pady=(20, 0))
+    
+    def logout(self):
+        """Logout and delete session."""
+        try:
+            if SESSION_FILE.exists():
+                SESSION_FILE.unlink()
+            self.is_logged_in = False
+            messagebox.showinfo("Logged Out", "You have been logged out successfully.")
+            self.show_login_screen()
+        except Exception as e:
+            logger.error(f"Error during logout: {e}")
+            messagebox.showerror("Error", f"Failed to logout: {str(e)}")
     
     def start_background_scraping(self):
         """Start scraping process in background."""
@@ -288,8 +369,7 @@ class LinkedInScraperApp:
         result = messagebox.showinfo(
             "Scraping Started",
             "The scraping process has been started in the background.\n\n"
-            "You can view the process in Task Manager.\n"
-            "Check 'scraper_background.log' for progress.\n\n"
+            f"Check the log file for progress:\n{LOG_FILE}\n\n"
             "The application window will now close."
         )
         
@@ -305,13 +385,12 @@ class LinkedInScraperApp:
         self.root.quit()
         self.root.destroy()
     
-
     def _start_background_process(self):
         """Start the actual background scraping process."""
         try:
             # Determine how to launch the scraper
             if getattr(sys, 'frozen', False):
-                # Running as compiled exe - call self with flag
+                # Running as packaged app
                 executable = sys.executable
                 args = [executable, "--scraper"]
             else:
@@ -321,7 +400,7 @@ class LinkedInScraperApp:
                 args = [executable, str(script_path), "--scraper"]
             
             # Start as a detached background process
-            if sys.platform == "win32":
+            if platform.system() == "Windows":
                 startupinfo = subprocess.STARTUPINFO()
                 startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
                 startupinfo.wShowWindow = subprocess.SW_HIDE
@@ -334,7 +413,7 @@ class LinkedInScraperApp:
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL
                 )
-            else:
+            else:  # macOS/Linux
                 subprocess.Popen(
                     args,
                     start_new_session=True,
@@ -349,75 +428,20 @@ class LinkedInScraperApp:
             messagebox.showerror("Error", f"Failed to start background process: {str(e)}")
 
 
-def ensure_playwright(force=False):
-    """Ensure Playwright browsers are installed."""
-    try:
-        from playwright.sync_api import sync_playwright
-        logger.info("Checking Playwright browsers...")
-        
-        needed = force
-        if not needed:
-            # Try to launch browser to verify installation
-            try:
-                with sync_playwright() as p:
-                    p.chromium.launch(headless=True).close()
-                    logger.info("Playwright browsers verified.")
-            except Exception:
-                needed = True
-            
-        if needed:
-            logger.info("Browsers not found (or forced). Installing...")
-            if not force: # Only show GUI message if not forced (installer handles UX)
-                messagebox.showinfo("First Time Setup", "Installing browser components...\nThis may take a few minutes. Please wait.")
-            
-            if getattr(sys, 'frozen', False):
-                try:
-                    old_argv = sys.argv
-                    sys.argv = ["playwright", "install"]
-                    
-                    from playwright.__main__ import main as pw_main
-                    try:
-                        pw_main()
-                    except SystemExit as e:
-                        if e.code != 0:
-                            logger.warning(f"Playwright install exited with code {e.code} (may still have succeeded)")
-                    finally:
-                        sys.argv = old_argv
-                        
-                except Exception as e:
-                    logger.warning(f"Playwright install attempt: {e} (browsers may still be available)")
-            else:
-                result = subprocess.run(
-                    [sys.executable, "-m", "playwright", "install"],
-                    capture_output=True,
-                    text=True
-                )
-                if result.returncode != 0:
-                    logger.warning(f"Playwright install returned code {result.returncode}: {result.stderr}")
-                else:
-                    logger.info("Browsers installed successfully")
-                
-            logger.info("Browser installation completed.")
-            
-    except Exception as e:
-        logger.warning(f"Playwright setup check: {e} (will attempt to continue)")
-
 def main():
     """Main entry point."""
+    # Set up Playwright paths for bundled browsers
+    setup_playwright_path()
+    
     # Check for CLI flags
     if len(sys.argv) > 1:
         if sys.argv[1] == "--scraper":
-            # Run background scraper
+            # Import and run background scraper
             import background_scraper
             asyncio.run(background_scraper.main())
             return
-        elif sys.argv[1] == "--install-browsers":
-            # Just install browsers and exit
-            ensure_playwright(force=True)
-            return
-
-    ensure_playwright(force=False)
     
+    # Launch main application
     root = tk.Tk()
     app = LinkedInScraperApp(root)
     root.mainloop()
@@ -425,4 +449,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

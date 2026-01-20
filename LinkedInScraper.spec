@@ -1,9 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('linkedin_session.json', '.')]
+datas = [('C:\\Users\\kunal\\anaconda3\\envs\\jobscraper311\\Lib\\site-packages\\playwright\\driver', 'playwright/driver'), ('C:\\Users\\kunal\\AppData\\Local\\ms-playwright\\chromium-1200', 'ms-playwright/chromium-1200')]
 binaries = []
-hiddenimports = ['bson', 'dotenv', 'pydantic']
+hiddenimports = ['playwright', 'playwright.sync_api', 'playwright._impl._driver', 'bson', 'dotenv', 'pydantic', 'greenlet']
 tmp_ret = collect_all('playwright')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('pymongo')
@@ -19,7 +19,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['matplotlib', 'numpy', 'pandas'],
     noarchive=False,
     optimize=0,
 )

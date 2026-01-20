@@ -7,8 +7,10 @@ Fetches job links from MongoDB and scrapes all required data.
 import asyncio
 import logging
 import sys
+import os
 from datetime import datetime
 from typing import List, Dict, Any
+from pathlib import Path
 from playwright.async_api import async_playwright
 
 from mongo_client import get_db, get_client
@@ -16,18 +18,61 @@ from linkedin_scraper.scrapers.job import JobScraper
 from linkedin_scraper.scrapers.company import CompanyScraper
 from linkedin_scraper.callbacks import SilentCallback
 
+# Define AppData directory
+APP_DATA_DIR = Path.home() / "AppData" / "Local" / "LinkedInScraper"
+APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+# Session and log files in AppData
+SESSION_FILE = APP_DATA_DIR / "linkedin_session.json"
+LOG_FILE = APP_DATA_DIR / "scraper_background.log"
+
 # Configure logging to file with UTF-8 encoding
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S',
     handlers=[
-        logging.FileHandler('scraper_background.log', encoding='utf-8'),
+        logging.FileHandler(LOG_FILE, encoding='utf-8'),
         logging.StreamHandler(sys.stdout)
     ]
 )
 
 logger = logging.getLogger(__name__)
+
+
+def setup_playwright_path():
+    """Set up Playwright to use bundled browsers when running as EXE."""
+    if getattr(sys, 'frozen', False):
+        # Running as compiled executable
+        base_path = Path(sys.executable).parent
+        
+        # Check for bundled browsers
+        bundled_browsers = base_path / "ms-playwright"
+        
+        if bundled_browsers.exists():
+            logger.info(f"Using bundled browsers at: {bundled_browsers}")
+            os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(bundled_browsers)
+            
+            # Also set driver path
+            driver_path = base_path / "playwright" / "driver"
+            if driver_path.exists():
+                os.environ["PLAYWRIGHT_DRIVER_PATH"] = str(driver_path)
+                logger.info(f"Using bundled driver at: {driver_path}")
+            
+            return True
+        else:
+            logger.warning(f"Bundled browsers not found at: {bundled_browsers}")
+            # Fall back to system installation
+            browsers_path = Path.home() / "AppData" / "Local" / "ms-playwright"
+            if browsers_path.exists():
+                logger.info(f"Using system browsers at: {browsers_path}")
+                os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(browsers_path)
+                return True
+            else:
+                logger.error("No Playwright browsers found!")
+                return False
+    
+    return True  # Not frozen, use normal Playwright
 
 
 class BackgroundScraper:
@@ -36,7 +81,7 @@ class BackgroundScraper:
     def __init__(self):
         self.client = None
         self.db = None
-        self.session_file = "linkedin_session.json"
+        self.session_file = SESSION_FILE
     
     async def connect_db(self):
         """Connect to MongoDB."""
@@ -146,6 +191,8 @@ class BackgroundScraper:
                 
         except Exception as e:
             logger.error(f"Error scraping search URL {url}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return results
     
     async def save_result(self, result: Dict[str, Any], job_link_url: str):
@@ -189,7 +236,15 @@ class BackgroundScraper:
         """Main scraping loop."""
         logger.info("="*60)
         logger.info("Background Scraper Started")
+        logger.info(f"Session file: {self.session_file}")
+        logger.info(f"Log file: {LOG_FILE}")
+        logger.info(f"Running as frozen: {getattr(sys, 'frozen', False)}")
         logger.info("="*60)
+        
+        # Set up Playwright environment
+        if not setup_playwright_path():
+            logger.error("Failed to set up Playwright browsers. Exiting.")
+            return
         
         # Connect to MongoDB
         if not await self.connect_db():
@@ -203,70 +258,87 @@ class BackgroundScraper:
             logger.info("No pending job links found. Exiting.")
             return
         
-        logger.info(f"Starting to scrape {len(job_links)} jobs...")
+        logger.info(f"Starting to scrape {len(job_links)} job search URLs...")
         
         # Start browser
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context()
-            
-            # Load session cookies
-            try:
-                import json
-                with open(self.session_file, "r") as f:
-                    session_data = json.load(f)
-                    if "cookies" in session_data:
-                        await context.add_cookies(session_data["cookies"])
-                        logger.info("[OK] Loaded LinkedIn session")
-            except Exception as e:
-                logger.warning(f"Could not load session: {e}")
-            
-            # Process each job link (search URL)
-            successful = 0
-            failed = 0
-            total_jobs_scraped = 0
-            
-            for idx, job_link in enumerate(job_links, 1):
-                logger.info(f"\n[{idx}/{len(job_links)}] Processing search URL...")
+        try:
+            async with async_playwright() as p:
+                logger.info("Launching Chromium browser (headless mode)...")
+                browser = await p.chromium.launch(
+                    headless=True,
+                    args=['--no-sandbox', '--disable-setuid-sandbox']  # Help with permissions
+                )
+                context = await browser.new_context()
                 
+                # Load session cookies from AppData
                 try:
-                    # Scrape all jobs from this search URL
-                    results = await self.scrape_job_search_url(job_link, context)
-                    
-                    if results:
-                        # Save each job result
-                        for result in results:
-                            if await self.save_result(result, job_link.get("url")):
-                                successful += 1
-                                total_jobs_scraped += 1
-                            else:
-                                failed += 1
-                        
-                        logger.info(f"[OK] Saved {len(results)} jobs from this search URL")
+                    import json
+                    if self.session_file.exists():
+                        with open(self.session_file, "r") as f:
+                            session_data = json.load(f)
+                            if "cookies" in session_data:
+                                await context.add_cookies(session_data["cookies"])
+                                logger.info("[OK] Loaded LinkedIn session from AppData")
                     else:
-                        failed += 1
-                        # Mark search URL as failed
-                        try:
-                            self.db.job_links.update_one(
-                                {"url": job_link.get("url")},
-                                {
-                                    "$set": {
-                                        "status": "failed",
-                                        "failed_at": datetime.utcnow()
-                                    }
-                                }
-                            )
-                        except:
-                            pass
-                    
-                    # Small delay between search URLs
-                    await asyncio.sleep(3)
-                    
+                        logger.warning(f"Session file not found at: {self.session_file}")
+                        logger.warning("Scraping may fail without authentication!")
                 except Exception as e:
-                    logger.error(f"Error processing search URL {idx}: {e}")
-                    failed += 1
-            
-            await browser.close()
+                    logger.warning(f"Could not load session: {e}")
+                
+                # Process each job link (search URL)
+                successful = 0
+                failed = 0
+                total_jobs_scraped = 0
+                
+                for idx, job_link in enumerate(job_links, 1):
+                    logger.info(f"\n[{idx}/{len(job_links)}] Processing search URL...")
+                    
+                    try:
+                        # Scrape all jobs from this search URL
+                        results = await self.scrape_job_search_url(job_link, context)
+                        
+                        if results:
+                            # Save each job result
+                            for result in results:
+                                if await self.save_result(result, job_link.get("url")):
+                                    successful += 1
+                                    total_jobs_scraped += 1
+                                else:
+                                    failed += 1
+                            
+                            logger.info(f"[OK] Saved {len(results)} jobs from this search URL")
+                        else:
+                            failed += 1
+                            # Mark search URL as failed
+                            try:
+                                self.db.job_links.update_one(
+                                    {"url": job_link.get("url")},
+                                    {
+                                        "$set": {
+                                            "status": "failed",
+                                            "failed_at": datetime.utcnow()
+                                        }
+                                    }
+                                )
+                            except:
+                                pass
+                        
+                        # Small delay between search URLs
+                        await asyncio.sleep(3)
+                        
+                    except Exception as e:
+                        logger.error(f"Error processing search URL {idx}: {e}")
+                        import traceback
+                        logger.error(traceback.format_exc())
+                        failed += 1
+                
+                await browser.close()
+                logger.info("Browser closed successfully")
+        
+        except Exception as e:
+            logger.error(f"Critical error during browser operation: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
         
         # Summary
         logger.info("\n" + "="*60)
