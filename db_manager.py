@@ -147,7 +147,7 @@ class DatabaseManager:
             List of pending job URLs
         """
         try:
-            query = {"status": "pending"}
+            query = {} # Fetch all links regardless of status
             cursor = self.db.job_links.find(query)
             
             if limit:

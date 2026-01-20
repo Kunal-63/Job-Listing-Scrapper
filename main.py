@@ -373,7 +373,7 @@ def ensure_playwright(force=False):
             if getattr(sys, 'frozen', False):
                 try:
                     old_argv = sys.argv
-                    sys.argv = ["playwright", "install", "chromium"]
+                    sys.argv = ["playwright", "install"]
                     
                     from playwright.__main__ import main as pw_main
                     try:
@@ -388,7 +388,7 @@ def ensure_playwright(force=False):
                     logger.warning(f"Playwright install attempt: {e} (browsers may still be available)")
             else:
                 result = subprocess.run(
-                    [sys.executable, "-m", "playwright", "install", "chromium"],
+                    [sys.executable, "-m", "playwright", "install"],
                     capture_output=True,
                     text=True
                 )

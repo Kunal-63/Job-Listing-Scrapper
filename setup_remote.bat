@@ -49,7 +49,8 @@ pip install -r requirements.txt
 
 REM 4. Install Playwright Browsers
 echo [INFO] Installing browsers...
-playwright install chromium
+call venv\Scripts\activate.bat
+call venv\Scripts\python.exe -m playwright install
 
 echo.
 echo [SUCCESS] Setup complete!
