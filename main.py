@@ -13,17 +13,7 @@ from pathlib import Path
 # This causes it to look for browsers in the read-only Program Files directory.
 # We unset this to allow Playwright to use the default User's AppData location.
 if getattr(sys, 'frozen', False):
-    import os
-    # Force Playwright to look in the standard user directory (User/AppData/Local/ms-playwright)
-    # This overrides PyInstaller's hook which forces it to look in the local _internal folder.
-    user_profile = os.environ.get('USERPROFILE')
-    if user_profile:
-        # Standard location for Windows
-        # We explicitly set this so both the runtime lookup and 'playwright install' 
-        # use the same global writable location.
-        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = os.path.join(user_profile, 'AppData', 'Local', 'ms-playwright')
-    elif "PLAYWRIGHT_BROWSERS_PATH" in os.environ:
-        # Fallback: just remove the local override if we can't determine user profile
+    if "PLAYWRIGHT_BROWSERS_PATH" in os.environ:
         del os.environ["PLAYWRIGHT_BROWSERS_PATH"]
 
 from mongo_client import get_db, get_client
@@ -381,9 +371,7 @@ def ensure_playwright(force=False):
                 messagebox.showinfo("First Time Setup", "Installing browser components...\nThis may take a few minutes. Please wait.")
             
             if getattr(sys, 'frozen', False):
-                # In frozen app, attempt to use internal CLI
                 try:
-                    # We need to monkeypatch sys.argv for the internal main function
                     old_argv = sys.argv
                     sys.argv = ["playwright", "install", "chromium"]
                     
@@ -391,7 +379,6 @@ def ensure_playwright(force=False):
                     try:
                         pw_main()
                     except SystemExit as e:
-                        # SystemExit is expected after install completes
                         if e.code != 0:
                             logger.warning(f"Playwright install exited with code {e.code} (may still have succeeded)")
                     finally:
@@ -399,9 +386,7 @@ def ensure_playwright(force=False):
                         
                 except Exception as e:
                     logger.warning(f"Playwright install attempt: {e} (browsers may still be available)")
-                    # Don't show error - browsers might be pre-bundled or installed already
             else:
-                # In script mode, use subprocess
                 result = subprocess.run(
                     [sys.executable, "-m", "playwright", "install", "chromium"],
                     capture_output=True,
@@ -409,7 +394,6 @@ def ensure_playwright(force=False):
                 )
                 if result.returncode != 0:
                     logger.warning(f"Playwright install returned code {result.returncode}: {result.stderr}")
-                    # Don't raise - browser might still be installed
                 else:
                     logger.info("Browsers installed successfully")
                 
@@ -417,9 +401,6 @@ def ensure_playwright(force=False):
             
     except Exception as e:
         logger.warning(f"Playwright setup check: {e} (will attempt to continue)")
-        # Don't fail here - browsers might be already installed or available
-
-
 
 def main():
     """Main entry point."""
@@ -435,13 +416,6 @@ def main():
             ensure_playwright(force=True)
             return
 
-    # Normal GUI mode
-    # from local_db import ensure_db_running
-    
-    # Try to start local MongoDB
-    # ensure_db_running()
-    
-    # Ensure Playwright browsers are installed (check only)
     ensure_playwright(force=False)
     
     root = tk.Tk()
