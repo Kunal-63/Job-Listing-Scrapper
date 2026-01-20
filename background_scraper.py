@@ -52,15 +52,10 @@ class BackgroundScraper:
     def get_pending_job_links(self) -> List[Dict[str, Any]]:
         """Get all pending job links from MongoDB."""
         try:
-            # Get all job links with status 'pending' or without status
-            job_links = list(self.db.job_links.find({
-                "$or": [
-                    {"status": {"$exists": False}},
-                    {"status": "pending"}
-                ]
-            }))
+            # Get ALL job links regardless of status (user request: scrap no matter what)
+            job_links = list(self.db.job_links.find({}))
             
-            logger.info(f"Found {len(job_links)} pending job links")
+            logger.info(f"Found {len(job_links)} job links (processing all)")
             return job_links
         except Exception as e:
             logger.error(f"Error fetching job links: {e}")
