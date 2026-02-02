@@ -1,0 +1,20 @@
+# Multi-Platform Job Scraper Configuration
+#
+# Configure settings for each job platform
+
+platforms:
+  linkedin:
+    enabled: true
+    requires_auth: true
+    session_file: "linkedin_session.json"
+    rate_limit: 1.0  # requests per second
+    
+  indeed:
+    enabled: true
+    requires_auth: false
+    rate_limit: 2.0  # requests per second
+    
+  glassdoor:
+    enabled: false  # Set to true when ready to use
+    requires_auth: false
+    rate_limit: 0.5  # requests per second (more conservative)

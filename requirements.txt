@@ -1,5 +1,3 @@
-pymongo
-motor
 playwright
+firebase-admin
 python-dotenv
-pydantic

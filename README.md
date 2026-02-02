@@ -1,193 +1,115 @@
-# LinkedIn Job Scraper - MongoDB Integration
+# Multi-Platform Job Scraper
 
-## Overview
-This application scrapes LinkedIn job postings and stores them in MongoDB with complete job and company details.
+A flexible, extensible job scraping system that supports multiple job platforms (LinkedIn, Indeed, Glassdoor, etc.).
 
-## Features
-- ✅ Modern login interface
-- ✅ Background scraping process
-- ✅ MongoDB integration
-- ✅ Complete job and company data extraction
-- ✅ Automatic duplicate detection
-
-## Data Structure
-
-### Job Links Collection (`job_links`)
-Stores job URLs to be scraped:
-- `engineName`: Category/engine name
-- `sourceName`: Source identifier
-- `platform`: Platform name (e.g., "Linkedin Job")
-- `url`: Job posting URL
-- `status`: Scraping status (pending/scraped/failed)
-- `created_at`: When the link was added
-- `scraped_at`: When it was scraped
-
-### Job Results Collection (`job_scrapping_results`)
-Stores scraped job data with all required fields:
-- `engineName`: Category/engine name
-- `sourceName`: Source identifier
-- `post_content`: Job description
-- `time`: Posted date
-- `title`: Job title
-- `company_name`: Company name
-- `company_url`: LinkedIn company URL
-- `overview`: Company description
-- `industry`: Company industry
-- `company_size`: Number of employees
-- `headquarters`: Company headquarters location
-- `founded`: Year founded
-- `website`: Company website
-- `job_url`: Original job posting URL
-- `location`: Job location
-- `applicant_count`: Number of applicants
-- `scraped_at`: Timestamp when scraped
-
-## Setup
+## Quick Start
 
 ### 1. Install Dependencies
 ```bash
-pip install -r requirements.txt
+pip install firebase_admin playwright pyyaml
+playwright install chromium
 ```
 
-### 2. Configure MongoDB
-Set your MongoDB connection string in `.env`:
-```
-MONGO_URI=mongodb://localhost:27017
-MONGO_DB=jobs_db
-```
+### 2. Configure Firebase
+Set up your Firebase credentials in `firebase_credentials.json` or set the `FIREBASE_CREDENTIALS` environment variable.
 
-Or use MongoDB Atlas:
-```
-MONGO_URI=mongodb+srv://username:password@cluster.mongodb.net/
-MONGO_DB=jobs_db
-```
+### 3. Configure Platforms
+Edit `config/platforms.yaml` to enable/disable platforms and set rate limits.
 
-### 3. Insert Job Links
-First, add job links to MongoDB from your JSON file:
+Edit `config/search_configs.json` to add your job search URLs.
+
+### 4. Run the Scraper
+
+**Full Pipeline:**
 ```bash
-python insert_job_links.py job_links.json
+python scripts/run_multi_platform_scrapers.py
 ```
 
-## Usage
-
-### Step 1: Run the Application
+**Individual Steps:**
 ```bash
-python main.py
+# Step 1: Scrape job links
+python scripts/scrape_multi_platform_links.py --limit 25
+
+# Step 2: Scrape job details
+python scripts/scrape_multi_platform_details.py --concurrent 3
+
+# Step 3: Scrape company details
+python scripts/scrape_multi_platform_companies.py --concurrent 2
 ```
 
-### Step 2: Login to LinkedIn
-1. Enter your work station name
-2. Accept terms and conditions
-3. Click "Connect your LinkedIn"
-4. Complete LinkedIn login in the browser window
-5. Wait for confirmation
-
-### Step 3: Start Scraping
-1. Click the "🚀 Start Scraping" button
-2. The process will start in the background
-3. You can close the GUI - scraping continues in background
-4. View progress in Task Manager
-
-### Background Process
-The scraper runs independently and:
-- Fetches pending job links from MongoDB
-- Scrapes job details (title, description, location, etc.)
-- Scrapes company details (industry, size, headquarters, etc.)
-- Saves all data to MongoDB
-- Updates job link status
-- Logs everything to `scraper_background.log`
-
-## Monitoring
-
-### View Logs
+**Platform-Specific:**
 ```bash
-# Real-time log monitoring
-tail -f scraper_background.log
+# Scrape only LinkedIn
+python scripts/run_multi_platform_scrapers.py --platform linkedin
 
-# On Windows
-Get-Content scraper_background.log -Wait
+# Scrape only Indeed
+python scripts/run_multi_platform_scrapers.py --platform indeed
 ```
 
-### Check MongoDB
-```python
-from mongo_client import get_db, get_client
+## Project Structure
 
-client = get_client()
-db = get_db(client)
-
-# Check job links
-print("Total job links:", db.job_links.count_documents({}))
-print("Pending:", db.job_links.count_documents({"status": "pending"}))
-print("Scraped:", db.job_links.count_documents({"status": "scraped"}))
-
-# Check results
-print("Total results:", db.job_scrapping_results.count_documents({}))
-
-# View latest result
-latest = db.job_scrapping_results.find_one(sort=[("scraped_at", -1)])
-print(latest)
-```
-
-## File Structure
 ```
 JobScrapper/
-├── main.py                     # Main GUI application
-├── background_scraper.py       # Background scraping process
-├── insert_job_links.py         # Script to insert job links
-├── mongo_client.py             # MongoDB connection utilities
-├── db_manager.py               # Database manager (async)
-├── linkedin_session.json       # LinkedIn session (auto-generated)
-├── scraper_background.log      # Background scraper logs
-└── linkedin_scraper/           # Scraper modules
-    ├── scrapers/
-    │   ├── job.py             # Job scraper
-    │   ├── company.py         # Company scraper
-    │   └── job_search.py      # Search scraper
-    └── ...
+├── db/                          # Database layer
+│   ├── firebase_manager.py      # Firebase operations
+│   └── firebase_client.py       # Firebase initialization
+├── scrapers/                    # Scraper modules
+│   ├── core/                    # Core architecture
+│   │   ├── base_scraper.py      # Abstract base classes
+│   │   ├── platform_registry.py # Platform registry & factory
+│   │   ├── data_models.py       # Unified data models
+│   │   └── auth_manager.py      # Authentication
+│   ├── platforms/               # Platform implementations
+│   │   ├── linkedin/            # LinkedIn scraper
+│   │   ├── indeed/              # Indeed scraper
+│   │   └── glassdoor/           # Glassdoor scraper
+│   └── utils/                   # Utilities
+│       ├── url_detector.py      # Platform detection
+│       └── rate_limiter.py      # Rate limiting
+├── scripts/                     # Scraper scripts
+│   ├── scrape_multi_platform_links.py     # Job link scraper
+│   ├── scrape_multi_platform_details.py   # Job details scraper
+│   ├── scrape_multi_platform_companies.py # Company scraper
+│   └── run_multi_platform_scrapers.py     # Orchestrator
+└── config/                      # Configuration
+    ├── platforms.yaml           # Platform settings
+    └── search_configs.json      # Search URLs
 ```
 
-## Troubleshooting
+## Supported Platforms
 
-### MongoDB Connection Issues
-- Ensure MongoDB is running: `mongod --version`
-- Check connection string in `.env`
-- For Atlas, whitelist your IP address
+- ✅ **LinkedIn** - Full support (job search, details, company info)
+- ✅ **Indeed** - Job search and details (no company pages)
+- ✅ **Glassdoor** - Job search and details (company scraping WIP)
 
-### LinkedIn Session Expired
-- Delete `linkedin_session.json`
-- Run `main.py` again and re-login
+## Adding New Platforms
 
-### Background Process Not Starting
-- Check if Python is in PATH
-- Run manually: `python background_scraper.py`
-- Check logs in `scraper_background.log`
+1. Create a new file in `scrapers/platforms/{platform_name}/`
+2. Implement `BasePlatformScraper` interface
+3. Use `@register_platform('platform_name')` decorator
+4. Add configuration to `config/platforms.yaml`
 
-### No Job Links Found
-- Insert job links first: `python insert_job_links.py job_links.json`
-- Check MongoDB: `db.job_links.find()`
+## Database Schema
 
-## Advanced Usage
+### Collections
 
-### Run Background Scraper Manually
-```bash
-python background_scraper.py
-```
+- **job_links** - Job URLs from search pages
+- **job_details** - Detailed job information
+- **company_details** - Company information
 
-### Custom Scraping
-Modify `background_scraper.py` to:
-- Change concurrency settings
-- Add retry logic
-- Filter specific job types
-- Add custom data fields
+### Fields
 
-## Notes
-- The scraper respects LinkedIn's rate limits
-- All scraping runs in headless mode (no browser window)
-- Session cookies are saved for reuse
-- Duplicate job links are automatically skipped
-- Failed jobs are marked and can be retried
+All documents include a `platform` field to identify the source platform.
 
-## Support
-For issues or questions, check the logs:
-- GUI logs: Console output
-- Background scraper: `scraper_background.log`
+## Features
+
+- 🔄 **Multi-Platform** - Easily add new job platforms
+- 🚀 **Concurrent Scraping** - Parallel processing for speed
+- 🔐 **Authentication** - Platform-specific auth handling
+- ⏱️ **Rate Limiting** - Respect platform limits
+- 📊 **Statistics** - Track scraping progress
+- 🔍 **Auto-Detection** - Detect platform from URLs
+
+## License
+
+MIT

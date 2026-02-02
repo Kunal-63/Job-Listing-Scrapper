@@ -9,7 +9,7 @@ from typing import Optional
 from playwright.async_api import Page
 
 from ..models.job import Job
-from ..core.exceptions import ProfileNotFoundError
+from ....utils.scraping_helpers import ProfileNotFoundError
 from ..callbacks import ProgressCallback, SilentCallback
 from .base import BaseScraper
 

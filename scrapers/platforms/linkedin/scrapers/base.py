@@ -6,7 +6,7 @@ from typing import Optional
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError
 
 from ..callbacks import ProgressCallback, SilentCallback
-from ..core import (
+from ....utils.scraping_helpers import (
     is_logged_in,
     detect_rate_limit,
     scroll_to_bottom,
@@ -15,8 +15,9 @@ from ..core import (
     handle_modal_close,
     extract_text_safe,
     retry_async,
+    AuthenticationError,
+    ScrapingError
 )
-from ..core.exceptions import AuthenticationError, ScrapingError
 
 logger = logging.getLogger(__name__)
 
