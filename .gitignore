@@ -149,3 +149,7 @@ downloads/
 # Project-specific
 # ===============================
 /FIX_SUMMARY.md
+
+# Ignore executables
+*.exe
+Output/
