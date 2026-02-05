@@ -51,34 +51,74 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-async def run_links_scraper(platform: str = None, limit: int = 25):
+async def run_links_scraper(platform: str = "linkedin", limit: int = 25):
     """Run job links scraper."""
     logger.info("\n" + "="*60)
     logger.info("STEP 1: Scraping Job Links")
+    logger.info(f"Platform: {platform}")
     logger.info("="*60)
     
     from scrape_multi_platform_links import MultiPlatformLinkScraper
-    import json
+    from scrapers.utils.url_detector import detect_platform
     
-    # Load search configs
-    config_file = Path('config/search_configs.json')
-    if not config_file.exists():
-        config_file = Path('job_links.json')
+    # Fetch search URLs from Firebase
+    firebase = FirebaseManager()
+    logger.info(f"Fetching search URLs from Firebase for platform: {platform}")
     
-    if not config_file.exists():
-        logger.error("No search configuration file found")
+    firebase_search_urls = firebase.get_search_urls(platform=platform, active_only=True)
+    
+    if not firebase_search_urls:
+        logger.warning(f"No search URLs found in Firebase for platform: {platform}")
+        logger.warning("Add search URLs using: python add_search_urls_to_firebase.py")
         return False
     
-    with open(config_file, 'r') as f:
-        search_configs = json.load(f)
+    # Convert Firebase documents to search config format
+    logger.info(f"Found {len(firebase_search_urls)} search URLs in Firebase")
+    search_configs = [
+        {
+            'url': item.get('url'),
+            'engineName': item.get('engineName', 'LinkedIn'),
+            'sourceName': item.get('sourceName', 'Job Search'),
+            'platform': item.get('platform', 'linkedin'),
+            'enabled': item.get('active', True)
+        }
+        for item in firebase_search_urls
+    ]
     
+    # Auto-detect and normalize platform names
+    for config in search_configs:
+        platform_value = config.get('platform', '')
+        
+        if platform_value:
+            platform_lower = platform_value.lower()
+            
+            if 'linkedin' in platform_lower:
+                config['platform'] = 'linkedin'
+            elif 'indeed' in platform_lower:
+                config['platform'] = 'indeed'
+            elif 'glassdoor' in platform_lower:
+                config['platform'] = 'glassdoor'
+            else:
+                detected = detect_platform(config['url'])
+                if detected:
+                    config['platform'] = detected
+                else:
+                    config['platform'] = 'linkedin'
+        else:
+            detected = detect_platform(config['url'])
+            if detected:
+                config['platform'] = detected
+            else:
+                config['platform'] = 'linkedin'
+    
+    # Run scraper with Firebase configs
     scraper = MultiPlatformLinkScraper(platform_filter=platform)
     await scraper.run(search_configs, limit)
     
     return True
 
 
-async def run_details_scraper(platform: str = None, limit: int = None, concurrent: int = 3):
+async def run_details_scraper(platform: str = "linkedin", limit: int = None, concurrent: int = 3):
     """Run job details scraper."""
     logger.info("\n" + "="*60)
     logger.info("STEP 2: Scraping Job Details")
@@ -92,7 +132,7 @@ async def run_details_scraper(platform: str = None, limit: int = None, concurren
     return True
 
 
-async def run_companies_scraper(platform: str = None, limit: int = None, concurrent: int = 2):
+async def run_companies_scraper(platform: str = "linkedin", limit: int = None, concurrent: int = 2):
     """Run company details scraper."""
     logger.info("\n" + "="*60)
     logger.info("STEP 3: Scraping Company Details")
@@ -106,7 +146,7 @@ async def run_companies_scraper(platform: str = None, limit: int = None, concurr
     return True
 
 
-def print_statistics(platform: str = None):
+def print_statistics(platform: str = "linkedin"):
     """Print database statistics."""
     logger.info("\n" + "="*60)
     logger.info("Database Statistics")
@@ -133,7 +173,7 @@ def print_statistics(platform: str = None):
 async def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(description='Run multi-platform job scraping pipeline')
-    parser.add_argument('--platform', type=str, help='Filter by platform (linkedin, indeed, glassdoor)')
+    parser.add_argument('--platform', type=str, default='linkedin', help='Platform (default: linkedin)')
     parser.add_argument('--links-only', action='store_true', help='Only scrape job links')
     parser.add_argument('--details-only', action='store_true', help='Only scrape job details')
     parser.add_argument('--companies-only', action='store_true', help='Only scrape company details')

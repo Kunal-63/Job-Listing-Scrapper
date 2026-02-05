@@ -30,8 +30,8 @@ from scrapers.utils.url_detector import detect_platform
 
 # Import platforms to register them
 import scrapers.platforms.linkedin
-import scrapers.platforms.indeed
-import scrapers.platforms.glassdoor
+# import scrapers.platforms.indeed  # Disabled - using LinkedIn only
+# import scrapers.platforms.glassdoor  # Disabled - using LinkedIn only
 
 # Configure logging
 logging.basicConfig(
@@ -60,6 +60,101 @@ class MultiPlatformLinkScraper:
         self.firebase_manager = FirebaseManager()
         self.platform_factory = PlatformFactory()
         self.platform_filter = platform_filter.lower() if platform_filter else None
+        self.browser = None
+        self.context = None
+        self.playwright = None
+    
+    async def initialize_browser(self):
+        """Initialize browser and context once for all searches."""
+        if self.browser is not None:
+            return  # Already initialized
+        
+        from playwright.async_api import async_playwright
+        
+        self.playwright = await async_playwright().start()
+        self.browser = await self.playwright.chromium.launch(headless=True)
+        self.context = await self.browser.new_context()
+        
+        # For LinkedIn, handle login once
+        if self.platform_filter == 'linkedin':
+            from linkedin_auth import load_session, wait_for_manual_login, is_logged_in
+            
+            # Try to load existing session
+            session_loaded = await load_session(self.context)
+            
+            if session_loaded:
+                # Verify session is still valid and has job search access
+                logger.info("Verifying LinkedIn session...")
+                if not await is_logged_in(self.context):
+                    logger.warning("LinkedIn session expired or invalid. Please log in again.")
+                    await self.cleanup()
+                    
+                    # Get new session
+                    session_data = await wait_for_manual_login(headless=False)
+                    if not session_data:
+                        raise Exception("LinkedIn login failed")
+                    
+                    # Reinitialize with new session
+                    self.playwright = await async_playwright().start()
+                    self.browser = await self.playwright.chromium.launch(headless=True)
+                    self.context = await self.browser.new_context()
+                    await self.context.add_cookies(session_data['cookies'])
+                    
+                    # Verify the new session works
+                    if not await is_logged_in(self.context):
+                        raise Exception("LinkedIn login verification failed after login")
+            else:
+                # No session file, need to log in
+                logger.info("No LinkedIn session found. Please log in.")
+                await self.cleanup()
+                
+                session_data = await wait_for_manual_login(headless=False)
+                if not session_data:
+                    raise Exception("LinkedIn login failed")
+                
+                # Initialize with new session
+                self.playwright = await async_playwright().start()
+                self.browser = await self.playwright.chromium.launch(headless=True)
+                self.context = await self.browser.new_context()
+                await self.context.add_cookies(session_data['cookies'])
+                
+                # Verify the new session works
+                if not await is_logged_in(self.context):
+                    raise Exception("LinkedIn login verification failed after login")
+            
+            logger.info("✓ LinkedIn browser session initialized and authenticated job search access verified")
+    
+    async def refresh_session(self):
+        """Refresh and save the current session to prevent expiration."""
+        if self.context and self.platform_filter == 'linkedin':
+            try:
+                import json
+                from linkedin_auth import SESSION_FILE
+                
+                # Get current cookies
+                cookies = await self.context.cookies()
+                session_data = {"cookies": cookies}
+                
+                # Save to file
+                with open(SESSION_FILE, 'w') as f:
+                    json.dump(session_data, f, indent=2)
+                
+                logger.debug("✓ LinkedIn session refreshed and saved")
+            except Exception as e:
+                logger.warning(f"Failed to refresh session: {e}")
+    
+    async def cleanup(self):
+        """Clean up browser resources."""
+        # Save session one last time before cleanup
+        await self.refresh_session()
+        
+        if self.browser:
+            await self.browser.close()
+            self.browser = None
+        if self.playwright:
+            await self.playwright.stop()
+            self.playwright = None
+        self.context = None
     
     async def scrape_search_url(
         self,
@@ -88,57 +183,47 @@ class MultiPlatformLinkScraper:
                 logger.error(f"Platform '{platform}' not available")
                 return []
             
-            async with async_playwright() as p:
-                # Launch browser
-                browser = await p.chromium.launch(headless=True)
-                context = await browser.new_context()
-                
-                # For LinkedIn, handle login before initializing platform scraper
+            # Ensure browser is initialized
+            await self.initialize_browser()
+            
+            # Create a new page for this search (reusing the same context)
+            page = await self.context.new_page()
+            
+            try:
+                # For LinkedIn, check if login is still valid before scraping
                 if platform == 'linkedin':
-                    from linkedin_auth import load_session, wait_for_manual_login, is_logged_in
+                    from linkedin_auth import check_page_requires_login, wait_for_manual_login
                     
-                    # Try to load existing session
-                    session_loaded = await load_session(context)
+                    # Navigate to the search URL first
+                    await page.goto(search_config.url, timeout=30000)
+                    await asyncio.sleep(2)
                     
-                    if session_loaded:
-                        # Verify session is still valid
-                        if not await is_logged_in(context):
-                            logger.warning("LinkedIn session expired. Please log in again.")
-                            await browser.close()
-                            
-                            # Get new session
-                            session_data = await wait_for_manual_login(headless=False)
-                            if not session_data:
-                                logger.error("LinkedIn login failed")
-                                return []
-                            
-                            # Relaunch with new session
-                            browser = await p.chromium.launch(headless=True)
-                            context = await browser.new_context()
-                            await context.add_cookies(session_data['cookies'])
-                    else:
-                        # No session file, need to log in
-                        logger.info("No LinkedIn session found. Please log in.")
-                        await browser.close()
+                    # Check if we need to re-login
+                    if await check_page_requires_login(page):
+                        logger.error("⚠ LinkedIn session expired during scraping!")
+                        logger.info("Requesting fresh login...")
                         
+                        # Close current page and browser
+                        await page.close()
+                        await self.cleanup()
+                        
+                        # Get new session
                         session_data = await wait_for_manual_login(headless=False)
                         if not session_data:
-                            logger.error("LinkedIn login failed")
-                            return []
+                            raise Exception("LinkedIn login failed - cannot continue scraping")
                         
-                        # Relaunch with new session
-                        browser = await p.chromium.launch(headless=True)
-                        context = await browser.new_context()
-                        await context.add_cookies(session_data['cookies'])
-                
-                # Don't call initialize_session - we've already loaded the session
-                # Just create page and search
-                page = await context.new_page()
+                        # Reinitialize browser with new session
+                        await self.initialize_browser()
+                        
+                        # Create a new page with the fresh session
+                        page = await self.context.new_page()
+                        logger.info("✓ Re-authenticated successfully, continuing scraping...")
                 
                 # Search for jobs
                 job_urls = await scraper.search_jobs(page, search_config, limit)
-                
-                await browser.close()
+            finally:
+                # Close the page (but keep the context/browser alive)
+                await page.close()
             
             logger.info(f"Extracted {len(job_urls)} job URLs from {platform}")
             return job_urls
@@ -176,48 +261,60 @@ class MultiPlatformLinkScraper:
         total_urls_found = 0
         total_urls_saved = 0
         
-        for idx, search_dict in enumerate(search_configs, 1):
-            # Convert to SearchConfig
-            search_config = SearchConfig.from_dict(search_dict)
+        try:
+            # Initialize browser once for all searches
+            await self.initialize_browser()
             
-            # Check if enabled
-            if not search_config.enabled:
-                logger.info(f"[{idx}/{len(search_configs)}] Skipping disabled search: {search_config.platform}")
-                continue
-            
-            # Apply platform filter
-            if self.platform_filter and search_config.platform.lower() != self.platform_filter:
-                logger.info(f"[{idx}/{len(search_configs)}] Skipping {search_config.platform} (filter: {self.platform_filter})")
-                continue
-            
-            logger.info(f"\n[{idx}/{len(search_configs)}] Processing: {search_config.platform} - {search_config.source_name}")
-            
-            # Scrape job URLs
-            job_urls = await self.scrape_search_url(search_config, limit_per_search)
-            
-            total_urls_found += len(job_urls)
-            
-            # Save to Firebase
-            if job_urls:
-                logger.info(f"Saving {len(job_urls)} job URLs to Firebase...")
+            for idx, search_dict in enumerate(search_configs, 1):
+                # Convert to SearchConfig
+                search_config = SearchConfig.from_dict(search_dict)
                 
-                links_data = [
-                    {
-                        'engineName': search_config.engine_name,
-                        'sourceName': search_config.source_name,
-                        'platform': search_config.platform,
-                        'url': url
-                    }
-                    for url in job_urls
-                ]
+                # Check if enabled
+                if not search_config.enabled:
+                    logger.info(f"[{idx}/{len(search_configs)}] Skipping disabled search: {search_config.platform}")
+                    continue
                 
-                saved_count = self.firebase_manager.add_job_links_bulk(links_data)
-                total_urls_saved += saved_count
-                logger.info(f"Saved {saved_count} new job URLs")
-            
-            # Small delay between searches
-            if idx < len(search_configs):
-                await asyncio.sleep(2)
+                # Apply platform filter
+                if self.platform_filter and search_config.platform.lower() != self.platform_filter:
+                    logger.info(f"[{idx}/{len(search_configs)}] Skipping {search_config.platform} (filter: {self.platform_filter})")
+                    continue
+                
+                logger.info(f"\n[{idx}/{len(search_configs)}] Processing: {search_config.platform} - {search_config.source_name}")
+                
+                # Scrape job URLs
+                job_urls = await self.scrape_search_url(search_config, limit_per_search)
+                
+                total_urls_found += len(job_urls)
+                
+                # Save to Firebase
+                if job_urls:
+                    logger.info(f"Saving {len(job_urls)} job URLs to Firebase...")
+                    
+                    links_data = [
+                        {
+                            'engineName': search_config.engine_name,
+                            'sourceName': search_config.source_name,
+                            'platform': search_config.platform,
+                            'url': url
+                        }
+                        for url in job_urls
+                    ]
+                    
+                    saved_count = self.firebase_manager.add_job_links_bulk(links_data)
+                    total_urls_saved += saved_count
+                    logger.info(f"Saved {saved_count} new job URLs")
+                
+                # Refresh session periodically (every 5 searches)
+                if idx % 5 == 0:
+                    await self.refresh_session()
+                
+                # Small delay between searches
+                if idx < len(search_configs):
+                    await asyncio.sleep(2)
+        
+        finally:
+            # Clean up browser resources
+            await self.cleanup()
         
         # Summary
         logger.info("\n" + "="*60)

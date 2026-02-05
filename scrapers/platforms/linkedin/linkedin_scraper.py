@@ -102,6 +102,22 @@ class LinkedInScraper(BasePlatformScraper):
             )
             logger.info("Navigated to LinkedIn search page")
             
+            # Verify we're on an authenticated page (not public view)
+            current_url = page.url
+            if 'linkedin.com/login' in current_url or 'linkedin.com/uas/login' in current_url:
+                logger.error("Redirected to login page - session invalid!")
+                return []
+            
+            # Check for authenticated navigation
+            try:
+                has_nav = await page.locator('nav.global-nav').count() > 0
+                if not has_nav:
+                    logger.warning("No authenticated navigation found - may be seeing public view")
+                else:
+                    logger.info("✓ Authenticated LinkedIn session confirmed")
+            except:
+                pass
+            
             # Wait for job listings
             try:
                 await page.wait_for_selector(

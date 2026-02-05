@@ -274,8 +274,14 @@ class FirebaseManager:
             True if job details exist (status != 'pending'), False otherwise
         """
         try:
-            existing = self.job_details_ref.where('jobUrl', '==', job_url).limit(1).get()
+            # Try snake_case first
+            existing = self.job_details_ref.where('job_url', '==', job_url).limit(1).get()
             existing_docs = list(existing)
+            
+            # If not found, try camelCase for backward compatibility
+            if len(existing_docs) == 0:
+                existing = self.job_details_ref.where('jobUrl', '==', job_url).limit(1).get()
+                existing_docs = list(existing)
             
             if len(existing_docs) == 0:
                 return False
@@ -303,9 +309,14 @@ class FirebaseManager:
         """
         try:
             # Check if job already exists by URL
-            job_url = job_data.get('jobUrl')
+            # Try both snake_case and camelCase for backward compatibility
+            job_url = job_data.get('job_url') or job_data.get('jobUrl')
             if job_url:
-                existing = self.job_details_ref.where('jobUrl', '==', job_url).limit(1).get()
+                existing = self.job_details_ref.where('job_url', '==', job_url).limit(1).get()
+                if not list(existing):
+                    # Try camelCase version
+                    existing = self.job_details_ref.where('jobUrl', '==', job_url).limit(1).get()
+                
                 existing_docs = list(existing)
                 
                 if existing_docs:
@@ -313,7 +324,8 @@ class FirebaseManager:
                     doc_id = existing_docs[0].id
                     job_data['updated_at'] = firestore.SERVER_TIMESTAMP
                     self.job_details_ref.document(doc_id).update(job_data)
-                    logger.info(f"Updated job details: {job_data.get('jobTitle', 'Unknown')}")
+                    job_title = job_data.get('job_title') or job_data.get('jobTitle', 'Unknown')
+                    logger.info(f"Updated job details: {job_title}")
                     return doc_id
             
             # Add new job details
@@ -324,7 +336,8 @@ class FirebaseManager:
             # Don't override it here
             
             doc_ref = self.job_details_ref.add(job_data)
-            logger.info(f"Saved job details: {job_data.get('jobTitle', 'Unknown')}")
+            job_title = job_data.get('job_title') or job_data.get('jobTitle', 'Unknown')
+            logger.info(f"Saved job details: {job_title}")
             return doc_ref[1].id
             
         except Exception as e:

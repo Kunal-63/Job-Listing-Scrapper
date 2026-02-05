@@ -67,7 +67,8 @@ class MultiPlatformDetailScraper:
         job_link: dict,
         scraper,
         context,
-        semaphore: asyncio.Semaphore
+        semaphore: asyncio.Semaphore,
+        platform: str
     ) -> bool:
         """
         Scrape details for a single job and save to Firebase immediately.
@@ -77,6 +78,7 @@ class MultiPlatformDetailScraper:
             scraper: Platform scraper instance
             context: Playwright browser context
             semaphore: Concurrency control
+            platform: Platform name (e.g., 'linkedin')
             
         Returns:
             True if successful, False otherwise
@@ -103,6 +105,27 @@ class MultiPlatformDetailScraper:
                 page = await context.new_page()
                 
                 try:
+                    # Navigate to the job page
+                    await page.goto(job_url, timeout=30000)
+                    await asyncio.sleep(2)
+                    
+                    # For LinkedIn, check if login is still valid
+                    if platform == 'linkedin':
+                        from linkedin_auth import check_page_requires_login
+                        
+                        if await check_page_requires_login(page):
+                            logger.error(f"⚠ LinkedIn session expired while scraping job: {job_url}")
+                            logger.error("⚠ Cannot continue scraping without valid login!")
+                            logger.error("⚠ Please restart the scraper to re-authenticate.")
+                            await page.close()
+                            # Mark as failed with specific error
+                            self.firebase_manager.update_job_link_status(
+                                job_link_id,
+                                'failed',
+                                error="Session expired - re-login required"
+                            )
+                            return False
+                    
                     # Scrape job details only (no company data)
                     job_data = await scraper.scrape_job_details(page, job_url)
                     
@@ -224,9 +247,10 @@ class MultiPlatformDetailScraper:
                     session_loaded = await load_session(context)
                     
                     if session_loaded:
-                        # Verify session is still valid
+                        # Verify session is still valid and has job search access
+                        logger.info("Verifying LinkedIn session...")
                         if not await is_logged_in(context):
-                            logger.warning("LinkedIn session expired. Please log in again.")
+                            logger.warning("LinkedIn session expired or invalid. Please log in again.")
                             await browser.close()
                             
                             # Get new session
@@ -240,6 +264,12 @@ class MultiPlatformDetailScraper:
                             browser = await p.chromium.launch(headless=True)
                             context = await browser.new_context()
                             await context.add_cookies(session_data['cookies'])
+                            
+                            # Verify the new session works
+                            if not await is_logged_in(context):
+                                logger.error("LinkedIn login verification failed after login")
+                                total_failed += len(platform_jobs)
+                                continue
                     else:
                         # No session file, need to log in
                         logger.info("No LinkedIn session found. Please log in.")
@@ -255,13 +285,21 @@ class MultiPlatformDetailScraper:
                         browser = await p.chromium.launch(headless=True)
                         context = await browser.new_context()
                         await context.add_cookies(session_data['cookies'])
+                        
+                        # Verify the new session works
+                        if not await is_logged_in(context):
+                            logger.error("LinkedIn login verification failed after login")
+                            total_failed += len(platform_jobs)
+                            continue
+                    
+                    logger.info("✓ LinkedIn authenticated job search access verified")
                 
                 
                 # Scrape jobs with concurrency control
                 # Each task will create its own page from the context
                 semaphore = asyncio.Semaphore(self.concurrent)
                 tasks = [
-                    self.scrape_job_detail(job_link, scraper, context, semaphore)
+                    self.scrape_job_detail(job_link, scraper, context, semaphore, platform)
                     for job_link in platform_jobs
                 ]
                 

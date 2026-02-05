@@ -16,29 +16,151 @@ logger = logging.getLogger(__name__)
 SESSION_FILE = Path(__file__).parent.parent / "linkedin_session.json"
 
 
+async def check_page_requires_login(page) -> bool:
+    """
+    Check if the current page indicates that login is required.
+    This is useful for detecting session expiration during scraping.
+    
+    Args:
+        page: Playwright page object
+        
+    Returns:
+        True if login is required, False if still authenticated
+    """
+    try:
+        current_url = page.url
+        
+        # Check if we're on a login page
+        if 'linkedin.com/login' in current_url or 'linkedin.com/uas/login' in current_url:
+            logger.warning("⚠ Detected redirect to login page - session expired")
+            return True
+        
+        # Check if we're on an authwall page
+        if 'authwall' in current_url.lower():
+            logger.warning("⚠ Detected authwall - session expired")
+            return True
+        
+        # Check for login form on the page
+        login_form_selectors = [
+            'form[action*="login"]',
+            'input[name="session_key"]',
+            'input[name="session_password"]',
+            '#username',
+            '#password'
+        ]
+        
+        for selector in login_form_selectors:
+            count = await page.locator(selector).count()
+            if count > 0:
+                logger.warning(f"⚠ Detected login form on page - session expired")
+                return True
+        
+        # Check for "Sign in" text that appears when not logged in
+        sign_in_text = await page.locator('text="Sign in"').count()
+        if sign_in_text > 2:  # More than 2 instances likely means we're logged out
+            logger.warning("⚠ Detected multiple 'Sign in' prompts - session may have expired")
+            return True
+        
+        return False
+        
+    except Exception as e:
+        logger.error(f"Error checking if login required: {e}")
+        return False
+
+
 async def is_logged_in(context: BrowserContext) -> bool:
     """
-    Check if user is logged in to LinkedIn.
+    Check if user is logged in to LinkedIn by verifying job search access.
     
     Args:
         context: Playwright browser context
         
     Returns:
-        True if logged in
+        True if logged in and can access job search
     """
     try:
         page = await context.new_page()
-        await page.goto("https://www.linkedin.com/feed/", timeout=10000)
-        await asyncio.sleep(2)
         
-        # Check for logged-in indicators
+        # Try to access a job search page (requires login for full results)
+        logger.debug("Verifying LinkedIn login status...")
+        await page.goto("https://www.linkedin.com/jobs/search/?keywords=software", timeout=15000)
+        await asyncio.sleep(3)
+        
         current_url = page.url
-        is_logged_in = 'linkedin.com/feed' in current_url or 'linkedin.com/mynetwork' in current_url
         
-        await page.close()
-        return is_logged_in
+        # Check if we're redirected to login page
+        if 'linkedin.com/login' in current_url or 'linkedin.com/uas/login' in current_url:
+            logger.warning("Redirected to login page - not logged in")
+            await page.close()
+            return False
+        
+        # Check for authenticated job search indicators
+        try:
+            # Look for elements that indicate we're logged in
+            # 1. Check for various navigation patterns (LinkedIn changes their structure)
+            nav_selectors = [
+                'nav.global-nav',
+                'nav[aria-label="Primary Navigation"]',
+                'header.global-nav',
+                'div.global-nav',
+                'nav.scaffold-layout__nav',
+                '[data-test-global-nav]'
+            ]
+            
+            has_nav = False
+            for selector in nav_selectors:
+                count = await page.locator(selector).count()
+                if count > 0:
+                    has_nav = True
+                    logger.debug(f"Found navigation with selector: {selector}")
+                    break
+            
+            # 2. Check for job listings (authenticated view)
+            has_jobs = await page.locator('li[data-occludable-job-id]').count() > 0
+            
+            # 3. Check we're not on a checkpoint/verification page
+            is_checkpoint = 'checkpoint' in current_url.lower()
+            
+            # 4. Additional check: look for profile/user menu elements
+            has_user_menu = False
+            user_menu_selectors = [
+                'button[aria-label*="View Profile"]',
+                'img.global-nav__me-photo',
+                '[data-control-name="nav.settings_signout"]',
+                'a[href*="/mynetwork/"]'
+            ]
+            for selector in user_menu_selectors:
+                count = await page.locator(selector).count()
+                if count > 0:
+                    has_user_menu = True
+                    logger.debug(f"Found user menu with selector: {selector}")
+                    break
+            
+            # More flexible verification:
+            # - Must have jobs visible
+            # - Must not be on checkpoint
+            # - Should have either nav OR user menu (LinkedIn structure varies)
+            if has_jobs and not is_checkpoint and (has_nav or has_user_menu):
+                logger.info("✓ LinkedIn login verified - authenticated job search access confirmed")
+                await page.close()
+                return True
+            elif has_jobs and not is_checkpoint:
+                # Jobs are visible and not on checkpoint - likely logged in
+                logger.info("✓ LinkedIn login verified - job listings accessible (relaxed check)")
+                await page.close()
+                return True
+            else:
+                logger.warning(f"Login check failed - nav:{has_nav}, jobs:{has_jobs}, user_menu:{has_user_menu}, checkpoint:{is_checkpoint}")
+                await page.close()
+                return False
+                
+        except Exception as e:
+            logger.warning(f"Could not verify login elements: {e}")
+            await page.close()
+            return False
+            
     except Exception as e:
-        logger.debug(f"Login check failed: {e}")
+        logger.error(f"Login check failed: {e}")
         return False
 
 

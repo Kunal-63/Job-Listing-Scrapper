@@ -23,6 +23,7 @@ ENV/
 .env
 .conda/
 conda/
+.github/
 
 # ===============================
 # Python build & packaging

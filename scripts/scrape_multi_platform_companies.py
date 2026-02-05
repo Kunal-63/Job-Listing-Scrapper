@@ -67,7 +67,8 @@ class MultiPlatformCompanyScraper:
         job: dict,
         scraper,
         context,
-        semaphore: asyncio.Semaphore
+        semaphore: asyncio.Semaphore,
+        platform: str
     ) -> Optional[CompanyData]:
         """
         Scrape company details for a single job.
@@ -77,6 +78,7 @@ class MultiPlatformCompanyScraper:
             scraper: Platform scraper instance
             context: Playwright browser context
             semaphore: Concurrency control
+            platform: Platform name (e.g., 'linkedin')
             
         Returns:
             CompanyData if successful, None otherwise
@@ -97,6 +99,20 @@ class MultiPlatformCompanyScraper:
             
             try:
                 logger.info(f"Scraping {platform} company: {company_name}")
+                
+                # Navigate to the company page
+                await page.goto(company_url, timeout=30000)
+                await asyncio.sleep(2)
+                
+                # For LinkedIn, check if login is still valid
+                if platform == 'linkedin':
+                    from linkedin_auth import check_page_requires_login
+                    
+                    if await check_page_requires_login(page):
+                        logger.error(f"⚠ LinkedIn session expired while scraping company: {company_url}")
+                        logger.error("⚠ Cannot continue scraping without valid login!")
+                        logger.error("⚠ Please restart the scraper to re-authenticate.")
+                        return None
                 
                 # Scrape company details
                 company_data = await scraper.scrape_company_details(page, company_url)
@@ -190,9 +206,10 @@ class MultiPlatformCompanyScraper:
                     session_loaded = await load_session(context)
                     
                     if session_loaded:
-                        # Verify session is still valid
+                        # Verify session is still valid and has job search access
+                        logger.info("Verifying LinkedIn session...")
                         if not await is_logged_in(context):
-                            logger.warning("LinkedIn session expired. Please log in again.")
+                            logger.warning("LinkedIn session expired or invalid. Please log in again.")
                             await browser.close()
                             
                             # Get new session
@@ -206,6 +223,12 @@ class MultiPlatformCompanyScraper:
                             browser = await p.chromium.launch(headless=True)
                             context = await browser.new_context()
                             await context.add_cookies(session_data['cookies'])
+                            
+                            # Verify the new session works
+                            if not await is_logged_in(context):
+                                logger.error("LinkedIn login verification failed after login")
+                                total_failed += len(platform_jobs)
+                                continue
                     else:
                         # No session file, need to log in
                         logger.info("No LinkedIn session found. Please log in.")
@@ -221,12 +244,20 @@ class MultiPlatformCompanyScraper:
                         browser = await p.chromium.launch(headless=True)
                         context = await browser.new_context()
                         await context.add_cookies(session_data['cookies'])
+                        
+                        # Verify the new session works
+                        if not await is_logged_in(context):
+                            logger.error("LinkedIn login verification failed after login")
+                            total_failed += len(platform_jobs)
+                            continue
+                    
+                    logger.info("✓ LinkedIn authenticated job search access verified")
                 
                 # Scrape companies with concurrency control
                 # Each task will create its own page from the context
                 semaphore = asyncio.Semaphore(self.concurrent)
                 tasks = [
-                    self.scrape_company_detail(job, scraper, context, semaphore)
+                    self.scrape_company_detail(job, scraper, context, semaphore, platform)
                     for job in platform_jobs
                 ]
                 
